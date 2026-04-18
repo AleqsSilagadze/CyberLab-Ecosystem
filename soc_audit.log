@@ -1,0 +1,3 @@
+{"ts": "19:48:51", "type": "OSINT_SHODAN", "detail": "Query: geoforum.ge", "severity": "INFO", "received_at": "19:48:51"}
+{"ts": "19:49:28", "type": "PORT_SCAN", "detail": "nmap 82.148.10.55 flags=-sS", "severity": "WARN", "received_at": "19:49:28"}
+{"ts": "19:54:13", "type": "OSINT_SHODAN", "detail": "Query: geoforum.ge", "severity": "INFO", "received_at": "19:54:13"}

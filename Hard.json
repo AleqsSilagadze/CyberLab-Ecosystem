@@ -1,0 +1,148 @@
+{
+  "_meta": {
+    "name": "Hard — Full Chain (DMZ→CORP→OT)",
+    "difficulty": "hard",
+    "description": "სამი ზონა. IDS/Hunter აქტიური. Alert სწრაფად იზრდება. SCADA/ICS სამიზნე.",
+    "objectives": [
+      "DMZ→CORP→OT სრული ჯაჭვი",
+      "SCADA HMI-ზე წვდომა",
+      "Exfiltration Alert 40%-ის გარეშე",
+      "Persistence — Hunter-ის გვერდის ავლა"
+    ],
+    "alert_decay_per_tick": 0,
+    "hunter_threshold": 50,
+    "c2_server": "203.0.113.10"
+  },
+  "network": {
+    "192.168.10.5": {
+      "hostname": "web-server",
+      "zone": "DMZ",
+      "os": "Ubuntu 20.04 LTS",
+      "routes_to": ["10.10.10.0/24"],
+      "ports": {
+        "80":   {"service": "http",  "version": "Apache/2.4.51", "vuln": "sql_injection"},
+        "443":  {"service": "https", "version": "Apache/2.4.51", "vuln": null},
+        "8080": {"service": "http",  "version": "Tomcat/9.0.37", "vuln": "rce"}
+      }
+    },
+    "192.168.10.10": {
+      "hostname": "db-server",
+      "zone": "DMZ",
+      "os": "Debian 10",
+      "routes_to": [],
+      "ports": {
+        "3306": {"service": "mysql", "version": "MySQL 5.7.32", "vuln": "weak_creds"},
+        "22":   {"service": "ssh",   "version": "OpenSSH 7.6",  "vuln": "brute_force"}
+      }
+    },
+    "192.168.10.20": {
+      "hostname": "dev-server",
+      "zone": "DMZ",
+      "os": "CentOS 8",
+      "routes_to": [],
+      "ports": {
+        "22":   {"service": "ssh",        "version": "OpenSSH 8.2",  "vuln": null},
+        "21":   {"service": "ftp",        "version": "vsftpd 3.0.3", "vuln": "anon_login"},
+        "5432": {"service": "postgresql", "version": "PG 12.4",      "vuln": null}
+      }
+    },
+    "10.10.10.5": {
+      "hostname": "corp-dc",
+      "zone": "CORP",
+      "os": "Windows Server 2012 R2",
+      "has_edr": true,
+      "edr_product": "Windows Defender (no Credential Guard — Server 2012)",
+      "av_enabled": true,
+      "ldap_signing": false,
+      "routes_to": ["172.16.5.0/24"],
+      "ports": {
+        "445":  {"service": "smb",      "version": "Samba 4.8",   "vuln": "eternalblue"},
+        "88":   {"service": "kerberos", "version": "MIT Kerberos", "vuln": null},
+        "389":  {"service": "ldap",     "version": "AD LDAP 3.0",  "vuln": "ldap_enum",  "note": "Signing NOT enforced — anonymous bind possible"},
+        "636":  {"service": "ldaps",    "version": "AD LDAPS",     "vuln": null},
+        "3389": {"service": "rdp",      "version": "RDP 8.1",      "vuln": "weak_creds"}
+      }
+    },
+    "10.10.10.15": {
+      "hostname": "corp-file",
+      "zone": "CORP",
+      "os": "Windows Server 2016",
+      "has_edr": true,
+      "edr_product": "Windows Defender",
+      "av_enabled": true,
+      "routes_to": [],
+      "ports": {
+        "445": {"service": "smb", "version": "Samba 4.11", "vuln": "anon_share"},
+        "22":  {"service": "ssh", "version": "OpenSSH 8.0", "vuln": null}
+      }
+    },
+    "10.10.10.30": {
+      "hostname": "corp-mail",
+      "zone": "CORP",
+      "os": "Ubuntu 18.04 LTS",
+      "routes_to": [],
+      "ports": {
+        "25":  {"service": "smtp", "version": "Postfix 3.4",   "vuln": null},
+        "143": {"service": "imap", "version": "Dovecot 2.3",   "vuln": "weak_creds"},
+        "80":  {"service": "http", "version": "Roundcube 1.4", "vuln": "xss"}
+      }
+    },
+    "172.16.5.10": {
+      "hostname": "scada-hmi",
+      "zone": "OT",
+      "os": "Windows 7 Embedded",
+      "routes_to": [],
+      "ports": {
+        "102": {"service": "s7comm", "version": "Siemens S7-300", "vuln": "s7_exploit"},
+        "80":  {"service": "http",   "version": "WinCC Web 7.5",  "vuln": "default_creds"},
+        "502": {"service": "modbus", "version": "Modbus TCP",     "vuln": "no_auth"}
+      }
+    },
+    "172.16.5.20": {
+      "hostname": "plc-controller",
+      "zone": "OT",
+      "os": "Siemens SIMATIC OS",
+      "routes_to": [],
+      "ports": {
+        "102": {"service": "s7comm", "version": "Siemens S7-400",  "vuln": "s7_exploit"},
+        "502": {"service": "modbus", "version": "Modbus RTU/TCP",   "vuln": "no_auth"}
+      }
+    }
+  },
+  "ad_domain": {
+    "name": "AMNESIA.LOCAL",
+    "dc_ip": "10.10.10.5",
+    "users": [
+      {"name": "Administrator", "groups": ["Domain Admins", "Enterprise Admins"], "spn": null,                   "enabled": true},
+      {"name": "svc_backup",    "groups": ["Backup Operators"],                   "spn": "MSSQLSvc/corp-db:1433","enabled": true},
+      {"name": "svc_scada",     "groups": ["SCADA_Operators"],                    "spn": "HOST/scada-hmi",       "enabled": true},
+      {"name": "j.smith",       "groups": ["Helpdesk", "Domain Users"],           "spn": null,                   "enabled": true},
+      {"name": "m.jones",       "groups": ["Domain Users"],                       "spn": null,                   "enabled": true},
+      {"name": "svc_web",       "groups": ["Domain Users"],                       "spn": "HTTP/web-server",      "enabled": true}
+    ],
+    "groups": {
+      "Domain Admins":   {"members": ["Administrator"],                    "acl_on": ["Domain Admins"]},
+      "Helpdesk":        {"members": ["j.smith"],                          "acl_on": ["Domain Users"]},
+      "Backup Operators":{"members": ["svc_backup"],                       "acl_on": []},
+      "SCADA_Operators": {"members": ["svc_scada"],                        "acl_on": []},
+      "Domain Users":    {"members": ["j.smith","m.jones","svc_web","svc_backup","svc_scada"], "acl_on": []}
+    },
+    "attack_paths": [
+      {
+        "id": "PATH-1",
+        "steps": ["j.smith","Helpdesk","GenericAll→svc_backup","Backup Operators","DCSync","Administrator"],
+        "description": "j.smith → Helpdesk (GenericAll) → svc_backup password reset → DCSync → DA"
+      },
+      {
+        "id": "PATH-2",
+        "steps": ["svc_web","Kerberoast","crack","svc_backup","DCSync","Administrator"],
+        "description": "svc_web Kerberoast → crack → svc_backup → DCSync"
+      },
+      {
+        "id": "PATH-3",
+        "steps": ["svc_scada","SCADA_Operators","WriteDACL→OT_Network","scada-hmi","PLC"],
+        "description": "svc_scada → SCADA_Operators (WriteDACL) → OT network access → SCADA/PLC"
+      }
+    ]
+  }
+}

