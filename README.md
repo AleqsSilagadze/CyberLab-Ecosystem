@@ -1,4 +1,6 @@
 
+<img width="1172" height="742" alt="image" src="https://github.com/user-attachments/assets/4559c116-7501-4dbe-a5a1-5a8d52579c01" />
+
 ## Overview / მიმოხილვა
 
 **EN:** CyberLab is an educational simulation environment built to help cybersecurity students and practitioners understand the full lifecycle of a cyberattack — from initial reconnaissance through lateral movement and impact — while simultaneously training blue-team analysts to detect, log, and respond to those events in real time.
@@ -179,4 +181,4 @@ cyberlab-v3/
 *CyberLab v3.0 — Built for defenders who think like attackers.*
 
 
-<img width="990" height="499" alt="Screenshot 2026-04-20 032934" src="https://github.com/user-attachments/assets/d5b91cbe-c17b-4483-b83b-fe399f1a134f" />
+
