@@ -177,3 +177,6 @@ cyberlab-v3/
 ---
 
 *CyberLab v3.0 — Built for defenders who think like attackers.*
+
+
+<img width="990" height="499" alt="Screenshot 2026-04-20 032934" src="https://github.com/user-attachments/assets/d5b91cbe-c17b-4483-b83b-fe399f1a134f" />
