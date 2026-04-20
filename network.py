@@ -1,28 +1,24 @@
-#!/usr/bin/env python3
-"""
-╔══════════════════════════════════════════════════════════════════════╗
-║        GeoForum CyberLab — Red Team Simulator  v3.0                 ║
-║        HARD MODE ONLY  |  Full Chain: DMZ → CORP → OT/SCADA         ║
-║        Blue Team SOC server: python server.py (separate terminal)   ║
-╚══════════════════════════════════════════════════════════════════════╝
-"""
+BANNER_COLOR   = "bold green"
+PROMPT_COLOR   = "bold green"
+MSF_COLOR      = "bold red"
+METERP_COLOR   = "bold underline red"
+ZONE_DMZ_COLOR = "cyan"
+ZONE_CORP_COLOR= "yellow"
+ZONE_OT_COLOR  = "bold red"
 
 import os, sys, time, json, random, socket, threading
 from datetime import datetime
-from rich.console import Console
-from rich.table   import Table
+from rich.console  import Console
+from rich.table    import Table
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TaskProgressColumn
-from rich.panel   import Panel
-from rich.prompt  import Prompt
-from rich.text    import Text
-from rich         import box
-from rich.rule    import Rule
+from rich.panel    import Panel
+from rich.prompt   import Prompt
+from rich.text     import Text
+from rich          import box
+from rich.rule     import Rule
 
 console = Console()
 
-# ══════════════════════════════════════════════════════════════════════
-#  SOC EVENT SENDER  — UDP broadcast to server.py
-# ══════════════════════════════════════════════════════════════════════
 SOC_HOST = "127.0.0.1"
 SOC_PORT = 9999
 
@@ -39,29 +35,114 @@ def soc_event(event_type: str, detail: str, severity: str = "INFO"):
         sock.sendto(payload, (SOC_HOST, SOC_PORT))
         sock.close()
     except Exception:
-        pass   # SOC server may not be running — that's fine
+        pass
 
-# ══════════════════════════════════════════════════════════════════════
-#  HINTS  (Hard only)
-# ══════════════════════════════════════════════════════════════════════
+NMAP_FLAG_WEIGHTS = {
+    "-sS":   {"noise": (2, 5),   "label": "SYN Stealth",       "opsec": "half-open scan — IDS ნაკლებად ხედავს"},
+    "-sT":   {"noise": (6, 10),  "label": "TCP Connect",        "opsec": "სრული handshake — ლოგებში ჩნდება"},
+    "-sU":   {"noise": (8, 14),  "label": "UDP Scan",           "opsec": "ნელი, ხმაურიანი — firewall ლოგი"},
+    "-sV":   {"noise": (4, 8),   "label": "Version Detection",  "opsec": "banner grab — დამატებითი request-ები"},
+    "-sN":   {"noise": (1, 3),   "label": "NULL Scan",          "opsec": "ძალიან stealth — ფარავს firewalled ports-ს"},
+    "-sF":   {"noise": (1, 3),   "label": "FIN Scan",           "opsec": "stealth — Windows-ზე არ მუშაობს"},
+    "-sX":   {"noise": (1, 3),   "label": "Xmas Scan",          "opsec": "stealth — Windows-ზე არ მუშაობს"},
+    "-A":    {"noise": (15, 25), "label": "Aggressive",         "opsec": "-sV -O --script=default — ძალიან ხმაურიანი!"},
+    "-O":    {"noise": (5, 8),   "label": "OS Detection",       "opsec": "TTL + TCP fingerprint probes"},
+    "-p-":   {"noise": (8, 15),  "label": "All 65535 Ports",    "opsec": "firewall ლოგებში გარკვევით ჩანს"},
+    "-T1":   {"noise": (-3, -3), "label": "Timing: Paranoid",   "opsec": "ძალიან ნელი — IDS rate-limit ვერ ჭრის"},
+    "-T2":   {"noise": (-2, -2), "label": "Timing: Sneaky",     "opsec": "ნელი — IDS ნაკლებად ხედავს"},
+    "-T3":   {"noise": (0, 0),   "label": "Timing: Normal",     "opsec": "სტანდარტული"},
+    "-T4":   {"noise": (5, 8),   "label": "Timing: Aggressive", "opsec": "სწრაფი — IDS rate ატყდება"},
+    "-T5":   {"noise": (10, 15), "label": "Timing: Insane",     "opsec": "ძალიან სწრაფი — instant IDS trigger"},
+    "-n":    {"noise": (-2, -2), "label": "No DNS",             "opsec": "DNS lookup-ი IDS-ს „ბოძებს\" — გამოიყენე!"},
+    "-Pn":   {"noise": (0, 0),   "label": "No Ping",            "opsec": "OPSEC+ — ping skip, ნაკლები ხმაური"},
+    "--script": {"noise": (10, 20), "label": "NSE Scripts",     "opsec": "vuln scripts = exploit-მსგავსი ტრაფიკი"},
+}
+
+NSE_SCRIPT_OUTPUTS = {
+    "smb-vuln-ms17-010": {
+        "hosts": ["10.10.10.5"],
+        "output": (
+            "[bold red]  smb-vuln-ms17-010:[/bold red]\n"
+            "[bold red]    VULNERABLE[/bold red]\n"
+            "    State: VULNERABLE\n"
+            "    IDs: CVE:CVE-2017-0144\n"
+            "    Risk factor: HIGH\n"
+            "    Description: Remote Code Execution vulnerability in SMBv1\n"
+            "[bright_black]    → use exploit/windows/smb/ms17_010_eternalblue[/bright_black]"
+        ),
+    },
+    "ldap-rootdse": {
+        "hosts": ["10.10.10.5"],
+        "output": (
+            "[bold cyan]  ldap-rootdse:[/bold cyan]\n"
+            "    namingContexts: DC=AMNESIA,DC=LOCAL\n"
+            "    ldapServiceName: AMNESIA.LOCAL:corp-dc$@AMNESIA.LOCAL\n"
+            "    dnsHostName: corp-dc.AMNESIA.LOCAL\n"
+            "    domainFunctionality: 4 (Windows Server 2008 R2)\n"
+            "[bright_black]    → domain confirmed: AMNESIA.LOCAL | DC: corp-dc[/bright_black]"
+        ),
+    },
+    "http-title": {
+        "hosts": ["192.168.10.5", "10.10.10.30", "172.16.5.10"],
+        "output": (
+            "[cyan]  http-title: Site title found[/cyan]\n"
+            "[bright_black]    → check banner for application version[/bright_black]"
+        ),
+    },
+    "modbus-discover": {
+        "hosts": ["172.16.5.10", "172.16.5.20"],
+        "output": (
+            "[bold red]  modbus-discover:[/bold red]\n"
+            "    Modbus TCP port 502 OPEN — no authentication required\n"
+            "    Unit ID: 1  |  Device: Siemens S7 PLC\n"
+            "[bold red]    ICS-CERT: CWE-306 — Missing Authentication for Critical Function[/bold red]\n"
+            "[bright_black]    → modbus read_coils <ip> 0 10[/bright_black]"
+        ),
+    },
+    "smb-enum-shares": {
+        "hosts": ["10.10.10.15"],
+        "output": (
+            "[bold cyan]  smb-enum-shares:[/bold cyan]\n"
+            "    \\\\corp-file\\IT_Tools   — READ ONLY\n"
+            "    \\\\corp-file\\Finance    — READ, WRITE (!! no ACL !!) \n"
+            "    \\\\corp-file\\HR_Confidential — READ (Domain Users)\n"
+            "[bright_black]    → smbclient \\\\10.10.10.15\\Finance[/bright_black]"
+        ),
+    },
+    "http-shellshock": {
+        "hosts": ["192.168.10.5"],
+        "output": (
+            "[bright_black]  http-shellshock: not vulnerable (Ubuntu 20.04 — patched)[/bright_black]"
+        ),
+    },
+    "vuln": {
+        "hosts": ["192.168.10.5", "10.10.10.5"],
+        "output": (
+            "[bold red]  vulners:[/bold red]\n"
+            "    CVE-2020-1938  9.8  Apache Tomcat AJP (Ghostcat)\n"
+            "    CVE-2021-41773 7.5  Apache path traversal\n"
+            "[bold yellow]  smb-vuln-ms17-010 (see above)[/bold yellow]\n"
+            "[bright_black]    → combine with: nmap --script=smb-vuln-ms17-010[/bright_black]"
+        ),
+    },
+}
+
 HINTS = [
     "[ 1 ] shodan geoforum.ge → IP-ის პოვნა, შემდეგ nmap -sS 82.148.10.55",
-    "[ 2 ] Tomcat/8080 → use exploit/multi/http/tomcat_mgr_upload → set HttpUsername tomcat → set HttpPassword tomcat → set RHOSTS 82.148.10.55 → run",
-    "[ 3 ] meterpreter > shell → cat /etc/hosts  (CORP subnet ჩანს)",
+    "[ 2 ] Tomcat/8080 → msfconsole → use exploit/multi/http/tomcat_mgr_upload → set HttpUsername tomcat → set HttpPassword tomcat → set RHOSTS 82.148.10.55 → run",
+    "[ 3 ] meterpreter > shell → cat /etc/hosts  (CORP subnet ჩანს: 10.10.10.5)",
     "[ 4 ] autoroute -s 10.10.10.0/24 → background → MSF: use auxiliary/server/socks_proxy → set SRVPORT 1080 → run",
     "[ 5 ] proxychains nmap -sT 10.10.10.5  (SOCKS proxy-ს გავლით CORP სკანი)",
     "[ 6 ] ldap_hashdump: set USERNAME j.smith → set PASSWORD P@ssw0rd2026! → run",
-    "[ 7 ] sessions -i 1 → mimikatz lsadump::dcsync /domain:AMNESIA.LOCAL /user:svc_backup  → Backup@123",
-    "[ 8 ] kerberoast → hashcat -m 13100 spn_hashes.txt rockyou.txt  (TGS-REP, არა NTLM!)",
-    "[ 9 ] autoroute -s 172.16.5.0/24 → db_nmap -p 80,102,502 172.16.5.10  (OT zone)",
+    "[ 7 ] sessions -i 2 → kerberoast → hashcat -m 13100 spn_hashes.txt rockyou.txt  (TGS-REP!)",
+    "[ 8 ] mimikatz lsadump::dcsync /domain:AMNESIA.LOCAL /user:svc_backup  → Backup@123  (+25% alert — ბოლოს!)",
+    "[ 9 ] run autoroute -s 172.16.5.0/24 → db_nmap -p 80,102,502 172.16.5.10  (OT zone)",
     "[10 ] use exploit/windows/scada/step7_exec → set RHOSTS 172.16.5.10 → run",
-    "[11 ] shell → modbus read_coils 172.16.5.20 0 10  (Modbus no_auth)",
-    "[12 ] type root.txt  🏁",
+    "[11 ] shell → modbus read_coils 172.16.5.20 0 10  (Modbus no_auth) → type root.txt",
+    "[12 ] persistence → schtasks /create ... → WMI subscription (Hunter-ის გვერდის ავლა)",
+    "[13 ] type root.txt  🏁",
 ]
 
-# ══════════════════════════════════════════════════════════════════════
-#  VIRTUAL FILE SYSTEM
-# ══════════════════════════════════════════════════════════════════════
 FS = {
     "DMZ": {
         "/":                      ["var", "etc", "tmp", "home", "opt"],
@@ -151,6 +232,12 @@ FILE_CONTENT = {
         "[bold red]www-data ALL=(ALL) NOPASSWD: /usr/bin/python3[/bold red]   "
         "[bright_black]← Privilege Escalation vector! (GTFOBins)[/bright_black]"
     ),
+    "crontab": (
+        "[bright_black]# /etc/crontab[/bright_black]\n"
+        "*/5 * * * *  root  /opt/scripts/backup.sh\n"
+        "[bold red]*/1 * * * *  www-data  /tmp/f.sh[/bold red]   [bright_black]← Suspicious! writable by www-data[/bright_black]\n"
+        "[bright_black]  → FINDING: Attacker-controlled cron — persistence vector (CWE-732)[/bright_black]"
+    ),
     "AD_Passwords.txt": (
         "[bold red]⚠  CLEARTEXT PASSWORDS — HELPDESK EMERGENCY USE ONLY[/bold red]\n"
         "[bright_black]Created: 2026-01-15  |  Owner: j.smith (Helpdesk)[/bright_black]\n\n"
@@ -220,38 +307,50 @@ FILE_CONTENT = {
         "  <system.web><customErrors mode='[bold red]Off[/bold red]'/></system.web>\n"
         "</configuration>"
     ),
+    "security_events.log": (
+        "[bright_black]2026-04-07 09:10:01  EventID 4624  Logon: svc_scada  Type:3 (Network)[/bright_black]\n"
+        "[bold yellow]2026-04-07 09:14:22  EventID 4625  Failed logon: unknown  Source: 10.10.10.5[/bold yellow]\n"
+        "[bold red]2026-04-07 09:15:05  EventID 4662  Object access: Directory Service (DCSync indicator)[/bold red]\n"
+        "[bold red]2026-04-07 09:15:44  EventID 7045  New service installed: WindowsUpdateSvc[/bold red]\n"
+        "[bright_black]  FINDING: Multiple high-severity events — Blue Team should have triggered![/bright_black]"
+    ),
+    "alarm_2026.log": (
+        "[bold red]2026-04-07 09:15:02  ALARM  Modbus write detected on coil 3 — unauthorised source[/bold red]\n"
+        "[bold red]2026-04-07 09:15:10  ALARM  S7comm CPU STOP command received — PLC halted![/bold red]\n"
+        "[bold yellow]2026-04-07 09:15:44  WARN   HMI disconnected from PLC unexpectedly[/bold yellow]\n"
+        "[bright_black]  ICS-CERT: These events indicate active attack on OT infrastructure[/bright_black]"
+    ),
 }
 
-
-# ══════════════════════════════════════════════════════════════════════
-#  MAIN LAB CLASS
-# ══════════════════════════════════════════════════════════════════════
 class CyberLab:
     def __init__(self):
-        self.alert_level     = 0
-        self.scanned_hosts   = set()
-        self.compromised     = {}          # {session_id: ip}
-        self.active_session  = None
-        self.msf_mode        = False
-        self.msf_module      = None
-        self.msf_options     = {
+        self.alert_level      = 0
+        self.scanned_hosts    = set()
+        self.compromised      = {}
+        self.active_session   = None
+        self.msf_mode         = False
+        self.msf_module       = None
+        self.msf_options      = {
             "RHOSTS":  "",
             "RPORT":   "",
             "PAYLOAD": "linux/x64/meterpreter/reverse_tcp",
             "LHOST":   "10.0.2.15",
             "LPORT":   "4444",
         }
-        self.known_routes    = ["82.148.10.55"]
-        self.internal_map    = {"82.148.10.55": "192.168.10.5"}
-        self.current_dir     = "/"
-        self.start_time      = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.hint_index      = 0
-        self.objectives_done = []
-        self.event_log       = []          # local forensic event log
-        self.meta            = {}
-        self.network         = {}
-        self.ad_domain       = None
-        self.shell_history   = []
+        self.known_routes     = ["82.148.10.55"]
+        self.internal_map     = {"82.148.10.55": "192.168.10.5"}
+        self.current_dir      = "/"
+        self.start_time       = datetime.now()
+        self.hint_index       = 0
+        self.objectives_done  = []
+        self.event_log        = []
+        self.loot_files       = []
+        self.persistence_done = []
+        self.meta             = {}
+        self.network          = {}
+        self.ad_domain        = None
+        self.shell_history    = []
+        self.c2_server        = "203.0.113.10"
 
         self.module_map = {
             "rce":           "exploit/multi/http/tomcat_mgr_upload",
@@ -268,11 +367,9 @@ class CyberLab:
             "no_auth":       "auxiliary/scanner/scada/modbusclient",
             "socks_proxy":   "auxiliary/server/socks_proxy",
             "kerberoast":    "auxiliary/gather/get_user_spns",
+            "psexec":        "exploit/windows/smb/psexec",
         }
 
-    # ──────────────────────────────────────────────────────────────────
-    #  EVENT LOG  (local + SOC broadcast)
-    # ──────────────────────────────────────────────────────────────────
     def log_event(self, event_type: str, detail: str, severity: str = "INFO"):
         entry = {
             "ts":       datetime.now().strftime("%H:%M:%S"),
@@ -281,7 +378,7 @@ class CyberLab:
             "severity": severity,
         }
         self.event_log.append(entry)
-        soc_event(event_type, detail, severity)   # fire & forget to Blue Team
+        soc_event(event_type, detail, severity)
 
     def cmd_eventlog(self):
         if not self.event_log:
@@ -290,23 +387,23 @@ class CyberLab:
                   header_style="bold white")
         t.add_column("Time",     style="bright_black", width=10)
         t.add_column("Severity", width=9)
-        t.add_column("Type",     style="cyan", width=20)
+        t.add_column("Type",     style="cyan", width=22)
         t.add_column("Detail")
-        sev_colors = {"INFO": "white", "WARN": "yellow", "HIGH": "bold red", "CRIT": "bold red reverse"}
+        sev_colors = {
+            "INFO": "white", "WARN": "yellow",
+            "HIGH": "bold red", "CRIT": "bold red reverse"
+        }
         for e in self.event_log[-30:]:
             sc = sev_colors.get(e["severity"], "white")
             t.add_row(e["ts"], f"[{sc}]{e['severity']}[/{sc}]", e["type"], e["detail"])
         console.print(t)
 
-    # ──────────────────────────────────────────────────────────────────
-    #  ALERT / HUNTER
-    # ──────────────────────────────────────────────────────────────────
     def _alert_bar(self) -> str:
         pct    = min(self.alert_level, 100)
         thresh = self.meta.get("hunter_threshold", 50)
         filled = int(pct / 5)
         bar    = "█" * filled + "░" * (20 - filled)
-        color  = "green" if pct < 30 else ("yellow" if pct < 60 else "bold red")
+        color  = "green" if pct < 30 else ("yellow" if pct < (thresh - 5) else "bold red")
         return (f"[{color}]ALERT [{bar}] {pct}%[/{color}]  "
                 f"[bright_black]Hunter triggers @{thresh}%[/bright_black]")
 
@@ -317,10 +414,11 @@ class CyberLab:
             console.print(Panel(
                 "[bold red]🚨  IDS THRESHOLD BREACHED — BLUE TEAM RESPONDED!\n\n[/bold red]"
                 "Blue Team-მა დაბლოკა შენი IP. ოპერაცია შეჩერდა.\n\n"
-                "[yellow]რჩევა: HARD-ში ყოველი ნაბიჯი ხმაურს ქმნის.\n"
-                "• nmap -sS ნაკლებ ხმაურიანია ვიდრე -A\n"
-                "• auxiliary scanner-ები სჯობს exploit-ებს reconnaissance-ისთვის\n"
-                "• autoroute pivot-ი თვითონ alert-ს არ ზრდის — exploit-ები ზრდის![/yellow]",
+                "[yellow]OPSEC სქემა:\n"
+                "  • nmap -sS -T2 -n    → ყველაზე stealth სკანი\n"
+                "  • kerberoast (+8%)   >> DCSync (+25%) >> mimikatz LSASS (+20%)\n"
+                "  • autoroute / SOCKS  → +0% (pivot alert-ს არ ზრდის)\n"
+                "  • persistence        → scheduled task (+6%) << service (+12%)[/yellow]",
                 title="[ ⛔ OPERATION BURNED ]", border_style="bold red",
             ))
             sys.exit(0)
@@ -342,52 +440,70 @@ class CyberLab:
                 return True
         return False
 
-    # ──────────────────────────────────────────────────────────────────
-    #  UI HELPERS
-    # ──────────────────────────────────────────────────────────────────
+    def _mark_obj(self, obj_key: str, log_detail: str):
+        if obj_key not in self.objectives_done:
+            self.objectives_done.append(obj_key)
+            console.print(f"[bold green]  ✓ OBJECTIVE: {obj_key}[/bold green]")
+            self.log_event("OBJECTIVE_DONE", log_detail, "HIGH")
+
+    def _session_status(self) -> str:
+        elapsed   = datetime.now() - self.start_time
+        mins, secs = divmod(int(elapsed.total_seconds()), 60)
+        sessions  = len(self.compromised)
+        routes    = len([r for r in self.known_routes if "/" in r])
+        loot      = len(self.loot_files)
+        events    = len(self.event_log)
+        hosts_str = "  ".join(
+            f"[bold green]{self.network[ip]['hostname']}[/bold green]"
+            for ip in self.compromised.values()
+        ) if self.compromised else "[bright_black]none[/bright_black]"
+
+        lines = [
+            f"  [bright_black]Sessions: [white]{sessions}[/white]  "
+            f"Pivot Routes: [white]{routes}[/white]  "
+            f"Loot: [white]{loot}[/white] files  "
+            f"Events: [white]{events}[/white]  "
+            f"Elapsed: [white]{mins:02d}m {secs:02d}s[/white][/bright_black]",
+            f"  [bright_black]Compromised: {hosts_str}[/bright_black]",
+        ]
+        return "\n".join(lines)
+
     def clear_screen(self):
         os.system('cls' if os.name == 'nt' else 'clear')
 
-    def _objectives_panel(self):
-        objectives = self.meta.get("objectives", [])
-        lines = []
-        for obj in objectives:
-            done = any(obj.lower()[:20] in d.lower() for d in self.objectives_done)
-            icon = "[bold green]✓[/bold green]" if done else "[bright_black]○[/bright_black]"
-            lines.append(f"  {icon} {obj}")
-        return "\n".join(lines) if lines else "  (none)"
-
     def banner(self):
         self.clear_screen()
-        art = (
-            "  ██████╗ ██╗   ██╗██████╗ ███████╗██████╗ ██╗      █████╗ ██████╗ \n"
-            " ██╔════╝ ╚██╗ ██╔╝██╔══██╗██╔════╝██╔══██╗██║     ██╔══██╗██╔══██╗\n"
-            " ██║  ███╗ ╚████╔╝ ██████╔╝█████╗  ██████╔╝██║     ███████║██████╔╝\n"
-            " ██║   ██║  ╚██╔╝  ██╔══██╗██╔══╝  ██╔══██╗██║     ██╔══██║██╔══██╗\n"
-            " ╚██████╔╝   ██║   ██████╔╝███████╗██║  ██║███████╗██║  ██║██████╔╝\n"
-            "  ╚═════╝    ╚═╝   ╚═════╝ ╚══════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═════╝"
-        )
-        console.print(art, style="bold cyan")
+        art = r"""
+   ▄████▄ ▓██   ██▓ ▄▄▄▄   ▓█████  ██▀███   ██▓    ▄▄▄       ▄▄▄▄
+  ▒██▀ ▀█  ▒██  ██▒▓█████▄ ▓█   ▀ ▓██ ▒ ██▒▓██▒   ▒████▄    ▓█████▄
+  ▒▓█    ▄  ▒██ ██░▒██▒ ▄██▒███   ▓██ ░▄█ ▒▒██░   ▒██  ▀█▄  ▒██▒ ▄██
+  ▒▓▓▄ ▄██▒ ░ ▐██▓░▒██░█▀  ▒▓█  ▄ ▒██▀▀█▄  ▒██░   ░██▄▄▄▄██ ▒██░█▀
+  ▒ ▓███▀ ░ ░ ██▒▓░░▓█  ▀█▓░▒████▒░██▓ ▒██▒░██████▒▓█   ▓██▒░▓█  ▀█▓
+  ░ ░▒ ▒  ░  ██▒▒▒ ░▒▓███▀▒░░ ▒░ ░░ ▒▓ ░▒▓░░ ▒░▓  ░▒▒   ▓▒█░░▒▓███▀▒
+    ░  ▒   ▓██ ░▒░ ▒░▒   ░  ░ ░  ░  ░▒ ░ ▒░░ ░ ▒  ░ ▒   ▒▒ ░▒░▒   ░
+  ░        ▒ ▒ ░░   ░    ░    ░     ░░   ░   ░ ░    ░   ▒    ░    ░
+  ░ ░      ░ ░      ░         ░  ░   ░         ░  ░     ░  ░ ░
+  ░        ░ ░           ░
+            CYBERLAB
+"""
+        console.print(art, style=BANNER_COLOR)
         console.print(
             "  [ OS: [cyan]Kali Linux 2026.1[/cyan]  USER: [bold red]anonimus[/bold red]"
             "  VPN: [green]tun0 ● Connected[/green]  IFACE: 10.0.2.15 ]\n"
             "  [ TARGET: [bold red]geoforum.ge[/bold red]"
             "  MODE: [bold red]HARD — Full Chain[/bold red]"
-            f"  SESSION: {self.start_time} ]",
+            f"  SESSION: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')} ]",
             style="bright_black",
         )
         console.print(f"\n  {self._alert_bar()}", highlight=False)
         console.print(Rule(style="bright_black"))
-        console.print(self._objectives_panel(), highlight=False)
+        console.print(self._session_status(), highlight=False)
         console.print(Rule(style="bright_black"))
         console.print(
             "  [bright_black]Commands: shodan · nmap · msfconsole · netmap · "
-            "eventlog · ad · hint · help · clear · exit[/bright_black]\n"
+            "eventlog · ad · hashcat · hint · help · clear · exit[/bright_black]\n"
         )
 
-    # ──────────────────────────────────────────────────────────────────
-    #  LOAD SCENARIO
-    # ──────────────────────────────────────────────────────────────────
     def load_scenario(self):
         self.clear_screen()
         console.print(Panel(
@@ -396,7 +512,7 @@ class CyberLab:
             "[white]ჯაჭვი:[/white]    DMZ (RCE) → CORP (AD/EternalBlue) → OT (SCADA/S7)\n\n"
             "[bold yellow]OPSEC სავალდებულოა:[/bold yellow]\n"
             "  ⚠  IDS/Hunter აქტიურია. Alert ≥ 50% = ოპერაცია დასრულდა.\n"
-            "  ⚠  Honeypot host-ი DMZ-ში! (192.168.10.99)\n"
+            "  ⚠  Honeypot host-ი DMZ-ში! (192.168.10.99) — ნუ შეეხები!\n"
             "  ⚠  ყოველი ნაბიჯი Blue Team SOC-ს ეგზავნება — [bold]server.py[/bold]-ს გაუშვი.\n"
             "  💡 [bold]hint[/bold] = შემდეგი ნაბიჯი  |  [bold]eventlog[/bold] = შენი კვალი",
             title="[ OPERATIONAL DIRECTIVE ]", border_style="red",
@@ -407,6 +523,7 @@ class CyberLab:
             self.meta      = data.get("_meta", {})
             self.network   = data.get("network", {})
             self.ad_domain = data.get("ad_domain")
+            self.c2_server = self.meta.get("c2_server", "203.0.113.10")
             self.known_routes.append("192.168.10.0/24")
             console.print(f"\n[bold green][+] სცენარი ჩაიტვირთა: {self.meta.get('name')}[/bold green]")
             console.print(f"[bright_black]    {self.meta.get('description')}[/bright_black]")
@@ -416,16 +533,13 @@ class CyberLab:
             console.print(f"[bold red][!] Hard.json ვერ ჩაიტვირთა: {e}[/bold red]")
             sys.exit(1)
 
-    # ──────────────────────────────────────────────────────────────────
-    #  CMD: NETMAP
-    # ──────────────────────────────────────────────────────────────────
     def cmd_netmap(self):
         console.print(Rule("[bold cyan]NETWORK MAP[/bold cyan]"))
         zones: dict[str, list] = {}
         for ip, node in self.network.items():
             zones.setdefault(node.get("zone", "?"), []).append((ip, node))
 
-        zone_colors = {"DMZ": "cyan", "CORP": "yellow", "OT": "bold red"}
+        zone_colors = {"DMZ": ZONE_DMZ_COLOR, "CORP": ZONE_CORP_COLOR, "OT": ZONE_OT_COLOR}
         zone_icons  = {"DMZ": "🌐", "CORP": "🏢", "OT": "⚙️ "}
 
         for zone, hosts in zones.items():
@@ -446,7 +560,7 @@ class CyberLab:
                 else:
                     status = "[bright_black]○ Unknown[/bright_black]"
 
-                reach = "[green]✔[/green]" if self.is_routable(ip) else "[red]✘ no route[/red]"
+                reach   = "[green]✔[/green]" if self.is_routable(ip) else "[red]✘ no route[/red]"
                 tree_ch = "└" if hosts[-1][0] == ip else "├"
                 console.print(
                     f"    {tree_ch}── {ip:<16} [white]{node['hostname']:<18}[/white] "
@@ -466,11 +580,12 @@ class CyberLab:
 
         if self.ad_domain:
             console.print(f"\n  [bold magenta]🔑  AD: {self.ad_domain['name']}  DC: {self.ad_domain['dc_ip']}[/bold magenta]")
+        if self.loot_files:
+            console.print(f"\n  [bold yellow]📦  Loot ({len(self.loot_files)} files): {', '.join(self.loot_files[-5:])}[/bold yellow]")
+        if self.persistence_done:
+            console.print(f"\n  [bold green]🔒  Persistence ({len(self.persistence_done)}): {', '.join(self.persistence_done)}[/bold green]")
         console.print()
 
-    # ──────────────────────────────────────────────────────────────────
-    #  CMD: AD INFO
-    # ──────────────────────────────────────────────────────────────────
     def cmd_ad(self):
         if not self.ad_domain:
             console.print("[red][-] AD domain not loaded.[/red]"); return
@@ -482,7 +597,7 @@ class CyberLab:
         t.add_column("SPN")
         t.add_column("Status")
         for u in self.ad_domain.get("users", []):
-            spn = u.get("spn") or "[bright_black]—[/bright_black]"
+            spn     = u.get("spn") or "[bright_black]—[/bright_black]"
             enabled = "[green]enabled[/green]" if u["enabled"] else "[red]disabled[/red]"
             t.add_row(u["name"], ", ".join(u["groups"]), spn, enabled)
         console.print(t)
@@ -493,9 +608,6 @@ class CyberLab:
             console.print(f"  [bold yellow]{ap['id']}[/bold yellow]: {arrow_chain}")
             console.print(f"  [bright_black]    {ap['description']}[/bright_black]\n")
 
-    # ──────────────────────────────────────────────────────────────────
-    #  CMD: SHODAN
-    # ──────────────────────────────────────────────────────────────────
     def cmd_shodan(self, query):
         self.log_event("OSINT_SHODAN", f"Query: {query}", "INFO")
         console.print(f"\n[bold yellow][*] Shodan query: [cyan]{query}[/cyan][/bold yellow]")
@@ -519,16 +631,12 @@ class CyberLab:
                 "  CVE-2020-1938 (Tomcat AJP Ghostcat) detected on :8080\n"
                 "  Shodan Tag: [bold red]vuln:CVE-2020-1938[/bold red][/bright_black]\n"
             )
-            console.print("[bright_black]  → Pasive recon. Kali-ს IP Shodan-ში არ ჩანს.[/bright_black]\n")
+            console.print("[bright_black]  → Passive recon. Kali-ს IP Shodan-ში არ ჩანს.[/bright_black]\n")
         else:
             console.print("[red][-] No results found.[/red]\n")
 
-    # ──────────────────────────────────────────────────────────────────
-    #  CMD: NMAP
-    # ──────────────────────────────────────────────────────────────────
     def cmd_nmap(self, ip_arg, flags=""):
         target_ip = ip_arg
-        is_stealth = "-sS" in flags or "-sV" in flags
 
         if not self.is_routable(target_ip):
             console.print(f"[red]RTTM Host Unreachable. No route to {target_ip}.[/red]")
@@ -540,7 +648,8 @@ class CyberLab:
             console.print(f"[red]Note: {target_ip} is down or filtering probes.[/red]\n")
             return
 
-        node = self.network[internal_ip]
+        node      = self.network[internal_ip]
+        flag_list = flags.split() if flags else []
 
         if node.get("is_honeypot", False):
             self.alert_level += 50
@@ -554,59 +663,179 @@ class CyberLab:
             ))
             self.check_hunter(); return
 
-        noise = random.randint(2, 5) if is_stealth else random.randint(6, 12)
+        scan_flags_found = []
+        total_noise_lo   = 0
+        total_noise_hi   = 0
+        has_script       = False
+        script_names     = []
+        has_timing       = False
+        has_A            = "-A" in flag_list
+
+        effective_flags = list(flag_list)
+        if has_A:
+            for f in ["-sV", "-O", "--script=default"]:
+                if f not in effective_flags:
+                    effective_flags.append(f)
+
+        scan_types = [f for f in effective_flags if f in ("-sS","-sT","-sU","-sN","-sF","-sX")]
+        if not scan_types:
+            effective_flags.insert(0, "-sS")
+
+        for f in effective_flags:
+            if f.startswith("--script"):
+                has_script = True
+                if "=" in f:
+                    script_names = f.split("=", 1)[1].split(",")
+            if f in NMAP_FLAG_WEIGHTS:
+                w = NMAP_FLAG_WEIGHTS[f]
+                lo, hi = w["noise"]
+                total_noise_lo += lo
+                total_noise_hi += hi
+                scan_flags_found.append((f, w["label"], w["opsec"]))
+                if f in ("-T1","-T2","-T3","-T4","-T5"):
+                    has_timing = True
+
+        if has_script and "--script" in NMAP_FLAG_WEIGHTS:
+            w  = NMAP_FLAG_WEIGHTS["--script"]
+            lo, hi = w["noise"]
+            total_noise_lo += lo
+            total_noise_hi += hi
+
+        noise = random.randint(
+            max(0, total_noise_lo),
+            max(1, total_noise_hi)
+        )
         self.alert_level += noise
-        self.log_event("PORT_SCAN", f"nmap {target_ip} flags={flags or '-sS'}", "WARN")
+        self.log_event("PORT_SCAN", f"nmap {target_ip} {flags or '-sS'}", "WARN")
+
+        scan_speed = 0.8
+        if "-T1" in effective_flags: scan_speed = 3.5
+        elif "-T2" in effective_flags: scan_speed = 2.0
+        elif "-T4" in effective_flags: scan_speed = 0.5
+        elif "-T5" in effective_flags: scan_speed = 0.3
+        if "-sV" in effective_flags:  scan_speed += 0.8
+        if "-A" in flag_list:         scan_speed += 1.5
+        if "-p-" in effective_flags:  scan_speed += 2.0
 
         with Progress(SpinnerColumn(), BarColumn(), TaskProgressColumn(),
                       TextColumn(f"[cyan]Scanning {target_ip}..."), transient=True) as p:
             task = p.add_task("", total=100)
             while not p.finished:
-                p.update(task, advance=random.randint(15, 35)); time.sleep(0.12)
+                p.update(task, advance=random.randint(8, 20))
+                time.sleep(scan_speed / 20)
 
         self.scanned_hosts.add(internal_ip)
+
+        if scan_flags_found:
+            console.print(f"\n[bright_black]Starting Nmap 7.94SVN ( https://nmap.org ) at "
+                          f"{datetime.now().strftime('%Y-%m-%d %H:%M')} EEST[/bright_black]")
+
         console.print(f"\n[bold green]Nmap scan report for {node['hostname']} ({target_ip})[/bold green]")
-        console.print(f"[bright_black]Host: up ({random.randint(10,80)}ms)  OS: {node['os']}  Zone: {node['zone']}[/bright_black]\n")
+        console.print(f"[bright_black]Host: up ({random.randint(10,80)}ms latency)  "
+                      f"OS: {node['os']}  Zone: {node['zone']}[/bright_black]\n")
 
         t = Table(box=box.SIMPLE, header_style="bold white")
         t.add_column("PORT",    style="cyan",   width=10)
         t.add_column("STATE",   style="green",  width=8)
         t.add_column("SERVICE", style="yellow", width=14)
-        t.add_column("VERSION", width=30)
-        t.add_column("VULN",    width=22)
+        if "-sV" in effective_flags or has_A:
+            t.add_column("VERSION", width=30)
+            t.add_column("VULN",    width=22)
+            for port, info in node["ports"].items():
+                vuln_str = (f"[bold red]⚑ {info['vuln']}[/bold red]"
+                            if info.get("vuln") else "[bright_black]—[/bright_black]")
+                t.add_row(f"{port}/tcp", "open", info["service"], info["version"], vuln_str)
+        else:
+            for port, info in node["ports"].items():
+                t.add_row(f"{port}/tcp", "open", info["service"])
 
-        for port, info in node["ports"].items():
-            vuln_str = (f"[bold red]⚑ {info['vuln']}[/bold red]"
-                        if info.get("vuln") else "[bright_black]—[/bright_black]")
-            t.add_row(f"{port}/tcp", "open", info["service"], info["version"], vuln_str)
         console.print(t)
+
+        if "-O" in effective_flags or has_A:
+            os_str = node["os"]
+            if "Windows Server 2012" in os_str:
+                cpe = "cpe:/o:microsoft:windows_server_2012:r2"
+                guess = "Microsoft Windows Server 2012 R2 (96%)"
+            elif "Windows 7" in os_str:
+                cpe = "cpe:/o:microsoft:windows_7"
+                guess = "Microsoft Windows 7 Embedded (94%)"
+            elif "Ubuntu" in os_str:
+                cpe = "cpe:/o:linux:linux_kernel"
+                guess = "Linux 5.4 (Ubuntu) (98%)"
+            elif "Debian" in os_str:
+                cpe = "cpe:/o:linux:linux_kernel"
+                guess = "Linux 4.19 (Debian) (96%)"
+            elif "CentOS" in os_str:
+                cpe = "cpe:/o:linux:linux_kernel"
+                guess = "Linux 4.18 (CentOS 8) (95%)"
+            elif "Siemens" in os_str:
+                cpe = "cpe:/o:siemens:simatic"
+                guess = "Siemens SIMATIC S7 (97%)"
+            else:
+                cpe = "cpe:/o:linux:linux_kernel"
+                guess = f"{os_str} (90%)"
+            console.print(f"[bright_black]OS CPE: {cpe}[/bright_black]")
+            console.print(f"[bright_black]Aggressive OS guesses: {guess}[/bright_black]")
+
+        if has_script:
+            console.print()
+            matched_any = False
+            for script_name in (script_names if script_names else ["default"]):
+                sn = script_name.strip()
+                if sn in NSE_SCRIPT_OUTPUTS:
+                    entry = NSE_SCRIPT_OUTPUTS[sn]
+                    if internal_ip in entry["hosts"] or not entry["hosts"]:
+                        console.print(f"[bright_black]PORT SCRIPT OUTPUT:[/bright_black]")
+                        console.print(entry["output"])
+                        matched_any = True
+                elif sn == "default":
+                    for k, v in NSE_SCRIPT_OUTPUTS.items():
+                        if internal_ip in v["hosts"]:
+                            console.print(v["output"])
+                            matched_any = True
+            if not matched_any:
+                console.print(f"[bright_black]  NSE: {', '.join(script_names) or 'default'} — no output for this host.[/bright_black]")
 
         if node.get("routes_to"):
             console.print(f"[yellow]  ↳ Dual-homed! Internal routes: {', '.join(node['routes_to'])}[/yellow]")
             console.print("[bright_black]    → autoroute -s <subnet> pivot-ისთვის[/bright_black]")
 
+        if scan_flags_found:
+            console.print()
+            opsec_t = Table(box=box.SIMPLE, header_style="bold white", show_header=False)
+            opsec_t.add_column("Flag",  style="cyan",         width=12)
+            opsec_t.add_column("Name",  style="white",        width=20)
+            opsec_t.add_column("OPSEC", style="bright_black")
+            for f, lbl, opsec in scan_flags_found:
+                opsec_t.add_row(f, lbl, opsec)
+            console.print(opsec_t)
+
         console.print(f"\n  {self._alert_bar()}  [bright_black](+{noise}% ამ სკანიდან)[/bright_black]\n")
         self.check_hunter()
 
-    # ──────────────────────────────────────────────────────────────────
-    #  MSF
-    # ──────────────────────────────────────────────────────────────────
     def show_msf_options(self):
         t = Table(title=f"Options ({self.msf_module or 'none'})",
                   header_style="bold magenta", box=box.SIMPLE_HEAD)
         t.add_column("Name"); t.add_column("Value"); t.add_column("Req"); t.add_column("Description")
         descs = {
-            "RHOSTS": "სამიზნე IP", "RPORT": "სამიზნე პორტი (ცარიელი=auto)",
-            "PAYLOAD": "Payload", "LHOST": "ჩვენი IP (reverse connection)",
-            "LPORT": "ჩვენი listen port",
+            "RHOSTS":  "სამიზნე IP",
+            "RPORT":   "სამიზნე პორტი (ცარიელი=auto)",
+            "PAYLOAD": "Payload",
+            "LHOST":   "ჩვენი IP (reverse connection)",
+            "LPORT":   "ჩვენი listen port",
+            "USERNAME":"მომხმარებელი (cred modules)",
+            "PASSWORD":"პაროლი (cred modules)",
+            "SMBUser": "SMB username (psexec/pth)",
+            "SMBPass": "SMB password or NTLM hash (psexec/pth)",
         }
         for k, v in self.msf_options.items():
+            if k.startswith("_"): continue
             req = "yes" if k in ("RHOSTS", "LHOST") else "no"
             t.add_row(k, v or "[bright_black](not set)[/bright_black]", req, descs.get(k, ""))
         console.print(t)
 
     def search_msf(self, term):
-        t = Table(title=f"Modules matching '{term}'", header_style="bold blue", box=box.SIMPLE_HEAD)
+        t = Table(title=f"Modules matching '{term}'", header_style=BANNER_COLOR, box=box.SIMPLE_HEAD)
         t.add_column("#", width=4); t.add_column("Module Path"); t.add_column("Vuln Tag")
         idx = 0
         for vk, mp in self.module_map.items():
@@ -625,7 +854,6 @@ class CyberLab:
 
         internal_ip = self.internal_map.get(rhost, rhost)
 
-        # ── Credential-required modules ──────────────────────────────
         cred_modules = {
             "exploit/multi/http/tomcat_mgr_upload": {
                 "user_opt": "HttpUsername", "pass_opt": "HttpPassword",
@@ -638,13 +866,20 @@ class CyberLab:
                 "hint": "ldap_hashdump requires valid AD credentials.\n"
                         "  set USERNAME j.smith\n  set PASSWORD P@ssw0rd2026!",
             },
+            "exploit/windows/smb/psexec": {
+                "user_opt": "SMBUser", "pass_opt": "SMBPass",
+                "default_user": None,  "default_pass": None,
+                "hint": "PsExec requires credentials or NTLM hash.\n"
+                        "  set SMBUser Administrator\n"
+                        "  set SMBPass aad3b435b51404eeaad3b435b51404ee:8846f7eaee8fb117ad06bdd830b7586c\n"
+                        "  (Pass-the-Hash: LM:NT format)",
+            },
         }
         if self.msf_module in cred_modules:
             cred_cfg  = cred_modules[self.msf_module]
             ukey, pkey = cred_cfg["user_opt"], cred_cfg["pass_opt"]
             username  = self.msf_options.get(ukey, "")
             password  = self.msf_options.get(pkey, "")
-            # auto-fill Tomcat defaults if set option was never called
             if not username and cred_cfg["default_user"]:
                 username = cred_cfg["default_user"]
                 self.msf_options[ukey] = username
@@ -670,20 +905,18 @@ class CyberLab:
             console.print("[red][-] Host unreachable or down.[/red]\n")
             self.check_hunter(); return
 
-        target_node  = self.network[internal_ip]
-        valid_vulns  = [info.get("vuln") for info in target_node["ports"].values()]
+        target_node   = self.network[internal_ip]
+        valid_vulns   = [info.get("vuln") for info in target_node["ports"].values()]
         required_vuln = None
         for vk, mp in self.module_map.items():
             if mp == self.msf_module:
                 required_vuln = vk; break
 
-        # ── EDR/AV check for exploit modules ─────────────────────────
         has_edr = target_node.get("has_edr", False)
         if has_edr and required_vuln not in ("ldap_enum", "anon_share", "anon_login"):
             edr = target_node.get("edr_product", "EDR")
             console.print(f"[yellow][!] {edr} detected on target...[/yellow]")
             time.sleep(0.8)
-            # EternalBlue still works on unpatched 2012R2 despite Defender
             if required_vuln == "eternalblue":
                 console.print("[bright_black]  → MS17-010 pre-dates EDR behavioral rules — proceeding...[/bright_black]")
             elif random.random() < 0.25:
@@ -706,12 +939,18 @@ class CyberLab:
             console.print(f"[bold green][+] Meterpreter session {session_id} opened "
                           f"({self.msf_options['LHOST']}:{self.msf_options['LPORT']} "
                           f"→ {rhost}:{random.randint(40000,65535)})[/bold green]")
-            console.print(f"[bright_black]    {target_node['hostname']}  {target_node['os']}  Zone: {target_node['zone']}[/bright_black]")
+            console.print(f"[bright_black]    {target_node['hostname']}  {target_node['os']}  "
+                          f"Zone: {target_node['zone']}[/bright_black]")
+
+            if required_vuln == "psexec":
+                console.print(f"[bold red][!] OPSEC: PsExec ქმნის სერვისს — Event ID 7045 (Service Install)![/bold red]")
+                console.print(f"[yellow]  → Stealthier: WMI exec / wmic /node:{rhost} process call create ...[/yellow]")
+
             console.print(f"\n  {self._alert_bar()}  [bright_black](+{noise}%)[/bright_black]\n")
 
             obj_map = {
                 "192.168.10.5": "DMZ→CORP→OT სრული ჯაჭვი",
-                "10.10.10.5":   "Domain Admin მოპოვება (BloodHound)",
+                "10.10.10.5":   "Domain Admin მოპოვება",
                 "172.16.5.10":  "SCADA HMI-ზე წვდომა",
             }
             if internal_ip in obj_map:
@@ -732,18 +971,16 @@ class CyberLab:
             console.print(f"  {self._alert_bar()}\n")
             self.check_hunter()
 
-    # ──────────────────────────────────────────────────────────────────
-    #  METERPRETER
-    # ──────────────────────────────────────────────────────────────────
     def handle_meterpreter(self, action, parts):
         target_ip  = self.compromised[self.active_session]
         node       = self.network[target_ip]
         is_win     = "Windows" in node["os"]
+        raw        = " ".join(parts)
 
         if action == "sysinfo":
             console.print(f"Computer    : [cyan]{node['hostname']}[/cyan]")
             console.print(f"OS          : {node['os']}")
-            console.print(f"Architecture: x64")
+            console.print("Architecture: x64")
             console.print(f"Meterpreter : x64/{'windows' if is_win else 'linux'}")
             console.print(f"Zone        : [yellow]{node['zone']}[/yellow]")
             console.print(f"User        : [bold green]{'NT AUTHORITY\\SYSTEM' if is_win else 'root'}[/bold green]")
@@ -767,21 +1004,6 @@ class CyberLab:
             else:
                 console.print(f"[*] Route {subnet} already exists.")
 
-        elif action == "hashdump":
-            if is_win:
-                self.log_event("CREDENTIAL_DUMP", f"hashdump on {node['hostname']}", "HIGH")
-                console.print("[bold yellow]Dumping SAM database...[/bold yellow]")
-                time.sleep(1)
-                console.print("Administrator:500:[bright_black]aad3b435b51404eeaad3b435b51404ee[/bright_black]:"
-                               "[bold red]8846f7eaee8fb117ad06bdd830b7586c[/bold red]:::")
-                console.print("j.smith:1001:[bright_black]aad3b435b51404eeaad3b435b51404ee[/bright_black]:"
-                               "[bold red]7ce21f17c0aee7fb9ceba532d0546ad6[/bold red]:::")
-                console.print("svc_scada:1003:[bright_black]aad3b435b51404eeaad3b435b51404ee[/bright_black]:"
-                               "[bold red]e19ccf75ee54e06b06a5907af13cef42[/bold red]:::")
-                console.print("[bright_black]  → crack: hashcat -m 1000 ntlm.txt rockyou.txt[/bright_black]\n")
-            else:
-                console.print("[red][-] Windows-only. Linux-ზე: cat /etc/shadow (root-ად)[/red]")
-
         elif action in ("ifconfig", "ipconfig"):
             my_ip = target_ip
             console.print(f"eth0: inet [cyan]{my_ip}[/cyan]  netmask 255.255.255.0")
@@ -790,21 +1012,19 @@ class CyberLab:
                                "  [bright_black]← internal NIC[/bright_black]")
 
         elif action == "shell":
-            target_ip_s = self.compromised[self.active_session]
-            node_s      = self.network[target_ip_s]
-            has_edr_s   = node_s.get("has_edr", False)
+            has_edr_s = node.get("has_edr", False)
             console.print("[*] Spawning shell...")
             time.sleep(0.3)
-            if has_edr_s and "Windows" in node_s["os"] and random.random() < 0.3:
+            if has_edr_s and is_win and random.random() < 0.3:
                 self.alert_level += 15
-                edr_s = node_s.get("edr_product", "Windows Defender")
+                edr_s = node.get("edr_product", "Windows Defender")
                 console.print(f"[bold red][-] {edr_s} terminated cmd.exe spawn — suspicious parent process.[/bold red]")
                 console.print("[yellow]  → Try: migrate to explorer.exe first[/yellow]")
                 console.print("[yellow]  → Or:  use post/multi/manage/shell_to_meterpreter[/yellow]\n")
                 self.check_hunter()
             else:
-                self.log_event("SHELL_SPAWNED", f"Interactive shell on {node_s['hostname']}", "HIGH")
-                self.interactive_shell(node_s)
+                self.log_event("SHELL_SPAWNED", f"Interactive shell on {node['hostname']}", "HIGH")
+                self.interactive_shell(node)
 
         elif action in ("background", "exit"):
             console.print(f"[*] Session {self.active_session} backgrounded.")
@@ -822,17 +1042,20 @@ class CyberLab:
             else:
                 console.print("[bright_black]No active sessions.[/bright_black]")
 
-        elif action == "run" and len(parts) > 1 and parts[1] == "autoroute":
-            # alias: run autoroute -s <subnet>
-            if len(parts) > 3 and parts[2] == "-s":
-                fake_parts = ["autoroute", "-s", parts[3]]
-                self.handle_meterpreter("autoroute", fake_parts)
+        elif action == "run" and len(parts) > 1:
+            sub = parts[1].lower()
+            if sub == "autoroute" and len(parts) > 3 and parts[2] == "-s":
+                self.handle_meterpreter("autoroute", ["autoroute", "-s", parts[3]])
+            elif sub == "post/windows/manage/persistence_exe":
+                self._cmd_persistence_service(node, is_win)
+            else:
+                console.print(f"[bright_black][*] Running post module: {' '.join(parts[1:])}[/bright_black]")
+                time.sleep(0.5)
+                console.print("[bright_black](Module completed)[/bright_black]\n")
 
         elif action == "getsystem":
-            target_ip  = self.compromised[self.active_session]
-            node       = self.network[target_ip]
-            has_edr    = node.get("has_edr", False)
-            edr        = node.get("edr_product", "EDR/AV")
+            has_edr = node.get("has_edr", False)
+            edr     = node.get("edr_product", "EDR/AV")
             self.log_event("PRIVESC", f"getsystem on {node['hostname']}", "HIGH")
             with Progress(SpinnerColumn(), TextColumn("[yellow]Attempting privilege escalation..."),
                           transient=True) as p:
@@ -852,15 +1075,12 @@ class CyberLab:
                 console.print(f"[bright_black]  → Privesc Vector: SeImpersonatePrivilege[/bright_black]\n")
 
         elif action == "hashdump":
-            target_ip  = self.compromised[self.active_session]
-            node       = self.network[target_ip]
             if is_win:
                 self.log_event("CREDENTIAL_DUMP", f"hashdump on {node['hostname']}", "HIGH")
                 console.print("[bold yellow]Dumping SAM/NTDS hashes...[/bold yellow]")
                 time.sleep(1)
-                is_dc = node.get("hostname", "") in ("corp-dc",)
+                is_dc = node.get("hostname", "") == "corp-dc"
                 if is_dc:
-                    # DC — local SAM has only local accounts, domain hashes need DCSync/NTDS
                     console.print("[bright_black]  [DC] SAM local accounts:[/bright_black]")
                     console.print("  Administrator(local):500:aad3b435b51404eeaad3b435b51404ee:"
                                   "[bold red]31d6cfe0d16ae931b73c59d7e0c089c0[/bold red]:::")
@@ -868,19 +1088,17 @@ class CyberLab:
                     console.print("[bright_black]  → Use: mimikatz lsadump::dcsync /domain:AMNESIA.LOCAL /user:Administrator[/bright_black]")
                     console.print("[bright_black]  → Or:  secretsdump.py AMNESIA.LOCAL/svc_backup:Backup@123@10.10.10.5[/bright_black]\n")
                 else:
-                    console.print("Administrator:500:aad3b435b51404eeaad3b435b51404ee:"
+                    console.print("  Administrator:500:aad3b435b51404eeaad3b435b51404ee:"
                                   "[bold red]8846f7eaee8fb117ad06bdd830b7586c[/bold red]:::")
-                    console.print("j.smith:1001:aad3b435b51404eeaad3b435b51404ee:"
+                    console.print("  j.smith:1001:aad3b435b51404eeaad3b435b51404ee:"
                                   "[bold red]7ce21f17c0aee7fb9ceba532d0546ad6[/bold red]:::")
-                    console.print("svc_scada:1003:aad3b435b51404eeaad3b435b51404ee:"
+                    console.print("  svc_scada:1003:aad3b435b51404eeaad3b435b51404ee:"
                                   "[bold red]e19ccf75ee54e06b06a5907af13cef42[/bold red]:::")
                     console.print("[bright_black]  → crack NTLM: hashcat -m 1000 ntlm.txt rockyou.txt[/bright_black]\n")
             else:
                 console.print("[red][-] Windows-only. Linux-ზე: cat /etc/shadow (root-ად)[/red]")
 
         elif action == "mimikatz":
-            target_ip = self.compromised[self.active_session]
-            node      = self.network[target_ip]
             if not is_win:
                 console.print("[red][-] mimikatz Windows-only.[/red]"); return
             sub = parts[1] if len(parts) > 1 else ""
@@ -898,6 +1116,7 @@ class CyberLab:
                 console.print(f"  * Username : Administrator")
                 console.print(f"  * [bold red]Password : Admin@2026![/bold red]")
                 console.print(f"  * NTLM     : [bold red]8846f7eaee8fb117ad06bdd830b7586c[/bold red]\n")
+                console.print("[bold red][!] Event ID 10 (LSASS Memory Read) — Blue Team WILL see this![/bold red]")
                 console.print("[bright_black]  SECURITY FINDING: LSASS memory contains plaintext credentials (WDigest enabled)[/bright_black]\n")
                 self.check_hunter()
 
@@ -916,7 +1135,7 @@ class CyberLab:
                     "Administrator": ("8846f7eaee8fb117ad06bdd830b7586c", "Admin@2026!"),
                     "svc_backup":    ("a87f3a337d73085c45f9416be5787d86", "Backup@123"),
                     "svc_scada":     ("e19ccf75ee54e06b06a5907af13cef42", "Sc4da@Admin!"),
-                    "krbtgt":        ("819af826bb148e603acbb79391b8955", "[uncrackable — Golden Ticket possible]"),
+                    "krbtgt":        ("819af826bb148e603acbb79391b8955",  "[uncrackable — Golden Ticket possible]"),
                 }
                 h, p_txt = hashes.get(user_arg, ("<hash>", "<unknown>"))
                 console.print(f"  Hash NTLM: [bold red]{h}[/bold red]")
@@ -927,13 +1146,11 @@ class CyberLab:
                 self.check_hunter()
             else:
                 console.print("[bright_black]mimikatz commands:[/bright_black]")
-                console.print("  [cyan]mimikatz sekurlsa::logonpasswords[/cyan]  — LSASS memory dump")
-                console.print("  [cyan]mimikatz lsadump::dcsync /domain:AMNESIA.LOCAL /user:Administrator[/cyan]")
+                console.print("  [cyan]mimikatz sekurlsa::logonpasswords[/cyan]          — LSASS dump  (+20% alert)")
+                console.print("  [cyan]mimikatz lsadump::dcsync /domain:AMNESIA.LOCAL /user:Administrator[/cyan]  (+25%)")
                 console.print("  [cyan]mimikatz lsadump::dcsync /domain:AMNESIA.LOCAL /user:krbtgt[/cyan]  — Golden Ticket\n")
 
         elif action == "kerberoast":
-            target_ip = self.compromised[self.active_session]
-            node      = self.network[target_ip]
             self.log_event("KERBEROAST", f"TGS request on {node['hostname']}", "HIGH")
             with Progress(SpinnerColumn(), TextColumn("[yellow]Requesting TGS tickets for SPNs..."),
                           transient=True) as p:
@@ -951,22 +1168,184 @@ class CyberLab:
             console.print(f"  {self._alert_bar()}\n")
             self.check_hunter()
 
-        elif action == "help":
-            console.print(
-                "[cyan]Meterpreter:[/cyan]\n"
-                "  sysinfo · getuid · getsystem · ifconfig · shell · background · exit\n"
-                "  hashdump              — SAM dump (local only; DC needs DCSync)\n"
-                "  mimikatz sekurlsa::logonpasswords\n"
-                "  mimikatz lsadump::dcsync /domain:AMNESIA.LOCAL /user:<user>  [+25% alert]\n"
-                "  kerberoast            — TGS tickets → hashcat -m 13100\n"
-                "  autoroute -s <subnet> — Pivot to new network segment\n"
-                "  sessions              — List/switch sessions\n"
-            )
-        else:
-            console.print(f"[-] Unknown meterpreter command: [red]{action}[/red]")
+        elif action == "asreproast":
+            self.log_event("ASREP_ROAST", f"AS-REP roasting on {node['hostname']}", "HIGH")
+            with Progress(SpinnerColumn(), TextColumn("[yellow]Checking accounts without preauth..."),
+                          transient=True) as p:
+                p.add_task("", total=None); time.sleep(1.5)
+            self.alert_level += 5
+            console.print("[bold green][+] AS-REP Roastable accounts (DONT_REQUIRE_PREAUTH):[/bold green]")
+            console.print("  [cyan]m.jones[/cyan]  — Domain Users")
+            console.print("    $krb5asrep$23$m.jones@AMNESIA.LOCAL:a8f3c2...9e4b  [bright_black](AS-REP hash)[/bright_black]")
+            console.print(f"\n[bright_black]  Saved: asrep_hashes.txt[/bright_black]")
+            console.print(f"[bold yellow]  → crack: hashcat -m 18200 asrep_hashes.txt rockyou.txt[/bold yellow]")
+            console.print(f"[bright_black]         (mode 18200 = Kerberos AS-REP, different from TGS-REP!)[/bright_black]")
+            console.print(f"  {self._alert_bar()}\n")
+            self.check_hunter()
 
-    # ──────────────────────────────────────────────────────────────────
-    # ──────────────────────────────────────────────────────────────────
+        elif action == "persistence":
+            self._cmd_persistence_registry(node, is_win, parts)
+
+        elif action == "upload" and len(parts) > 1:
+            fname = parts[1]
+            self.log_event("FILE_UPLOAD", f"upload {fname} → {node['hostname']}", "HIGH")
+            self.alert_level += 3
+            with Progress(SpinnerColumn(), BarColumn(), TaskProgressColumn(),
+                          TextColumn(f"[cyan]Uploading {fname}..."), transient=True) as p:
+                t = p.add_task("", total=100)
+                while not p.finished:
+                    p.update(t, advance=random.randint(20, 40)); time.sleep(0.1)
+            dest = ("C:\\Windows\\Temp\\" if is_win else "/tmp/") + fname
+            console.print(f"[bold green][+] {fname} → {dest}[/bold green]")
+            console.print(f"[bright_black]  Alert +3%  |  OPSEC: Temp folder-ი EDR-ს მონიტორინგ ქვეშ![/bright_black]\n")
+            self.check_hunter()
+
+        elif action == "download" and len(parts) > 1:
+            fname = parts[1]
+            self.log_event("FILE_DOWNLOAD", f"download {fname} from {node['hostname']}", "HIGH")
+            self.alert_level += 5
+            with Progress(SpinnerColumn(), BarColumn(), TaskProgressColumn(),
+                          TextColumn(f"[cyan]Downloading {fname}..."), transient=True) as p:
+                t = p.add_task("", total=100)
+                while not p.finished:
+                    p.update(t, advance=random.randint(15, 35)); time.sleep(0.1)
+            console.print(f"[bold green][+] {fname} → /home/anonimus/loot/{fname}[/bold green]")
+            console.print(f"[bright_black]  Alert +5%  |  გამოყენება: hashcat / impacket / strings[/bright_black]\n")
+            if fname not in self.loot_files:
+                self.loot_files.append(fname)
+            if fname in ("ntds.dit", "ntds.dit.bak", "SYSTEM.hive"):
+                console.print(f"[bold yellow]  → impacket-secretsdump -ntds {fname} -system SYSTEM.hive LOCAL[/bold yellow]\n")
+            self.check_hunter()
+
+        elif action == "exfil":
+            self._cmd_exfil(node, parts)
+
+        elif action == "migrate" and len(parts) > 1:
+            target_pid = parts[1]
+            if not is_win:
+                console.print("[red][-] migrate Windows-only command.[/red]"); return
+            self.log_event("PROCESS_MIGRATE", f"migrate PID {target_pid} on {node['hostname']}", "HIGH")
+            procs_win  = {
+                "512":  "svchost.exe",
+                "640":  "lsass.exe",
+                "1204": "wincc.exe",
+                "3344": "cmd.exe",
+                "820":  "explorer.exe",
+                "1508": "spoolsv.exe",
+            }
+            proc_name = procs_win.get(target_pid, f"PID:{target_pid}")
+            with Progress(SpinnerColumn(), TextColumn(f"[yellow]Migrating to {proc_name}..."),
+                          transient=True) as p:
+                p.add_task("", total=None); time.sleep(1.0)
+            if target_pid == "640":
+                self.alert_level += 20
+                console.print(f"[bold red][-] lsass.exe migration blocked — EDR detected PROCESS_ALL_ACCESS on LSASS![/bold red]")
+                console.print("[yellow]  → OPSEC: explorer.exe (PID 820) ან svchost.exe (PID 512) გამოიყენე[/yellow]\n")
+                self.check_hunter()
+            else:
+                self.alert_level += 4
+                console.print(f"[bold green][+] Successfully migrated to {proc_name} (PID {target_pid})[/bold green]")
+                console.print(f"[bright_black]  Meterpreter now inside {proc_name}  |  Alert +4%[/bright_black]\n")
+
+        elif action == "help":
+            self._meterpreter_help()
+
+        else:
+            console.print(f"[bright_black][-] Unknown meterpreter command: {action}[/bright_black]")
+            console.print("[bright_black]  Type 'help' for available commands.[/bright_black]")
+
+    def _cmd_persistence_registry(self, node, is_win, parts):
+        """persistence [-X] [-i <seconds>] [-p <port>] [-r <lhost>]"""
+        if not is_win:
+            console.print("[red][-] persistence module is Windows-only.[/red]"); return
+        lhost = self.msf_options.get("LHOST", "10.0.2.15")
+        lport = self.msf_options.get("LPORT", "4444")
+        for i, p in enumerate(parts):
+            if p == "-r" and i+1 < len(parts): lhost = parts[i+1]
+            if p == "-p" and i+1 < len(parts): lport = parts[i+1]
+
+        self.log_event("PERSISTENCE_INSTALL", f"Registry Run Key on {node['hostname']}", "CRIT")
+        self.alert_level += 8
+        with Progress(SpinnerColumn(), TextColumn("[yellow]Installing persistence..."),
+                      transient=True) as p:
+            p.add_task("", total=None); time.sleep(1.2)
+        console.print("[bold green][+] Running Persistence as: NT AUTHORITY\\SYSTEM[/bold green]")
+        console.print(f"[bold green][+] Persistence installed to registry:[/bold green]")
+        console.print(f"    HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run")
+        console.print(f"    Value: WindowsUpdate → C:\\Windows\\Temp\\update.exe")
+        console.print(f"    Callback: {lhost}:{lport} every 60s\n")
+        console.print(f"[bold red][!] OPSEC: Registry Run Key — Event ID 13 (Registry Value Set)[/bold red]")
+        console.print(f"[yellow]  → Stealthier options:[/yellow]")
+        console.print(f"[yellow]     Scheduled task:   schtasks /create ... (+6% vs +8%)[/yellow]")
+        console.print(f"[yellow]     WMI subscription: wmic subscription (+4%, Hunter-ს ძნელად ხედავს)[/yellow]")
+        console.print(f"[yellow]     Service install:  run post/windows/manage/persistence_exe (+12%)[/yellow]\n")
+        console.print(f"  {self._alert_bar()}\n")
+        key = "Registry Run Key"
+        if key not in self.persistence_done:
+            self.persistence_done.append(key)
+        self._mark_obj("Persistence — Hunter-ის გვერდის ავლა", "Registry Run Key installed")
+        self.check_hunter()
+
+    def _cmd_persistence_service(self, node, is_win):
+        """run post/windows/manage/persistence_exe — installs as Windows service"""
+        if not is_win:
+            console.print("[red][-] Service persistence is Windows-only.[/red]"); return
+        self.log_event("PERSISTENCE_SERVICE", f"Service install on {node['hostname']}", "CRIT")
+        self.alert_level += 12
+        with Progress(SpinnerColumn(), TextColumn("[yellow]Creating persistent service..."),
+                      transient=True) as p:
+            p.add_task("", total=None); time.sleep(1.5)
+        console.print("[bold green][+] post/windows/manage/persistence_exe completed[/bold green]")
+        console.print("    Service name: WindowsUpdateSvc")
+        console.print("    Binary path:  C:\\Windows\\System32\\svchost32.exe")
+        console.print("    Start type:   Automatic (SYSTEM)\n")
+        console.print(f"[bold red][!] OPSEC: Service install = Event ID 7045 — high visibility![/bold red]")
+        console.print(f"[yellow]  → Blue Team SOC sees this immediately via server.py[/yellow]\n")
+        console.print(f"  {self._alert_bar()}\n")
+        key = "Windows Service (persistence_exe)"
+        if key not in self.persistence_done:
+            self.persistence_done.append(key)
+        self._mark_obj("Persistence — Hunter-ის გვერდის ავლა", "Service persistence installed")
+        self.check_hunter()
+
+    def _cmd_exfil(self, node, parts):
+        """exfil <filename> [--method https|dns]"""
+        fname  = parts[1] if len(parts) > 1 else "data.zip"
+        method = "https"
+        for i, p in enumerate(parts):
+            if p == "--method" and i+1 < len(parts): method = parts[i+1]
+
+        if method == "dns":
+            self.alert_level += 2
+            self.log_event("EXFIL_DNS", f"DNS tunnel exfil: {fname} → {self.c2_server}", "CRIT")
+            with Progress(SpinnerColumn(), BarColumn(), TaskProgressColumn(),
+                          TextColumn("[cyan]DNS tunnel exfil..."), transient=True) as p:
+                t = p.add_task("", total=100)
+                while not p.finished:
+                    p.update(t, advance=random.randint(5, 10)); time.sleep(0.15)
+            console.print(f"[bold green][+] {fname} exfiltrated via DNS TXT queries[/bold green]")
+            console.print(f"[bright_black]    C2: {self.c2_server}  |  Port: 53  |  Alert +2%[/bright_black]")
+            console.print(f"[bright_black]    OPSEC: DNS = firewall bypass — port 53 almost always open[/bright_black]")
+            console.print(f"[bright_black]    IDS: DNS tunneling hard to detect without DPI inspection[/bright_black]\n")
+        else:
+            self.alert_level += 3
+            self.log_event("EXFIL_HTTPS", f"HTTPS exfil: {fname} → {self.c2_server}", "CRIT")
+            with Progress(SpinnerColumn(), BarColumn(), TaskProgressColumn(),
+                          TextColumn(f"[cyan]Uploading to C2 {self.c2_server}..."), transient=True) as p:
+                t = p.add_task("", total=100)
+                while not p.finished:
+                    p.update(t, advance=random.randint(10, 20)); time.sleep(0.12)
+            size = random.randint(8000, 150000)
+            console.print(f"[bold green][+] {size:,} bytes exfiltrated → https://{self.c2_server}/upload[/bold green]")
+            console.print(f"[bright_black]    OPSEC: HTTPS encrypted — IDS ვერ ხედავს payload-ს[/bright_black]")
+            console.print(f"[bright_black]    Alert +3%  |  compare: direct download +5%[/bright_black]\n")
+
+        if fname not in self.loot_files:
+            self.loot_files.append(f"[C2]{fname}")
+        self._mark_obj("Exfiltration Alert 40%-ის გარეშე", f"{method.upper()} exfil: {fname}")
+        console.print(f"  {self._alert_bar()}\n")
+        self.check_hunter()
+
     def interactive_shell(self, node):
         is_win    = "Windows" in node["os"]
         zone      = node["zone"]
@@ -988,11 +1367,9 @@ class CyberLab:
                 ).strip()
             except (KeyboardInterrupt, EOFError):
                 break
-
             if not raw:
                 continue
             self.shell_history.append(raw)
-
             if raw.lower() in ("exit", "quit"):
                 console.print("[*] Exiting shell → back to meterpreter.")
                 break
@@ -1000,7 +1377,6 @@ class CyberLab:
             parts = raw.split()
             cmd   = parts[0].lower()
 
-            # ── cd ──────────────────────────────────────────────────
             if cmd == "cd":
                 target = parts[1] if len(parts) > 1 else ("C:\\" if is_win else "/")
                 if target in ("..", "..\\", "../"):
@@ -1012,7 +1388,6 @@ class CyberLab:
                     sep = "\\" if is_win else "/"
                     cwd = cwd.rstrip(sep) + sep + target
 
-            # ── ls / dir ────────────────────────────────────────────
             elif cmd in ("ls", "dir"):
                 fs_zone = FS.get(zone, FS["DMZ"])
                 entries = fs_zone.get(cwd) or fs_zone.get(cwd.rstrip("/\\"))
@@ -1023,7 +1398,6 @@ class CyberLab:
                 else:
                     console.print("[bright_black](empty directory)[/bright_black]")
 
-            # ── cat / type ──────────────────────────────────────────
             elif cmd in ("cat", "type") and len(parts) > 1:
                 fname = parts[1]
                 if fname in FILE_CONTENT:
@@ -1033,7 +1407,6 @@ class CyberLab:
                         title=f"[white]► {fname}[/white]",
                         border_style="bright_black",
                     ))
-                    # Objectives
                     if fname == "config.php.bak":
                         self._mark_obj("DB კრედიტების მოპოვება", "DB credentials found (config.php.bak)")
                     if fname == "root.txt":
@@ -1046,13 +1419,12 @@ class CyberLab:
                                        "Physical emergency codes accessed on scada-hmi", "CRIT")
                         self._mark_obj("Exfiltration Alert 40%-ის გარეშე", "ICS codes exfiltrated")
                 else:
-                    console.print(f"[red]cat: {fname}: No such file or directory[/red]")
+                    console.print(f"[red]{cmd}: {fname}: No such file or directory[/red]")
 
-            # ── find ────────────────────────────────────────────────
-            elif cmd == "find" and len(parts) > 2:
-                keyword = parts[-1].lower()
-                fs_zone = FS.get(zone, FS["DMZ"])
-                found = []
+            elif cmd == "find" and len(parts) > 1:
+                keyword  = parts[-1].lower()
+                fs_zone  = FS.get(zone, FS["DMZ"])
+                found    = []
                 for path, entries in fs_zone.items():
                     for e in entries:
                         if keyword in e.lower():
@@ -1064,12 +1436,11 @@ class CyberLab:
                 else:
                     console.print("[bright_black](nothing found)[/bright_black]")
 
-            # ── whoami ──────────────────────────────────────────────
             elif cmd == "whoami":
                 console.print("[bold green]nt authority\\system[/bold green]"
                               if is_win else "[bold green]root[/bold green]")
 
-            elif cmd in ("id",) and not is_win:
+            elif cmd == "id" and not is_win:
                 console.print("uid=0(root) gid=0(root) groups=0(root)")
 
             elif cmd in ("ifconfig", "ipconfig"):
@@ -1079,16 +1450,104 @@ class CyberLab:
                 console.print(f"Linux {node['hostname']} 5.15.0-1-amd64 #1 SMP")
 
             elif cmd == "systeminfo" and is_win:
-                console.print(f"Host Name:   {node['hostname']}\n"
-                               f"OS:          {node['os']}\nDomain: AMNESIA.LOCAL")
+                console.print(
+                    f"Host Name:                 {node['hostname']}\n"
+                    f"OS Name:                   {node['os']}\n"
+                    f"OS Version:                6.1.7601 Service Pack 1 Build 7601\n"
+                    f"Domain:                    AMNESIA.LOCAL\n"
+                    f"Logon Server:              \\\\corp-dc\n"
+                    f"Hotfix(s):                 [bold red]0 Hotfix(es) Installed.[/bold red]"
+                )
+
+            elif cmd == "net" and is_win and len(parts) > 1:
+                sub = parts[1].lower()
+                if sub == "user" and len(parts) > 2 and "/domain" in raw.lower():
+                    uname = parts[2]
+                    user_info = {
+                        "Administrator": ("Domain Admins, Enterprise Admins", "Never"),
+                        "j.smith":       ("Helpdesk, Domain Users",           "2027-01-15"),
+                        "svc_backup":    ("Backup Operators, Domain Users",    "Never"),
+                        "svc_scada":     ("SCADA_Operators, Domain Users",     "Never"),
+                        "m.jones":       ("Domain Users",                      "2027-06-01"),
+                    }
+                    if uname in user_info:
+                        grps, exp = user_info[uname]
+                        console.print(f"User name                    {uname}")
+                        console.print(f"Account active               Yes")
+                        console.print(f"Password expires             {exp}")
+                        console.print(f"Global Group memberships     {grps}")
+                    else:
+                        console.print(f"[red]The user name could not be found.[/red]")
+                elif sub == "group" and "/domain" in raw.lower():
+                    gname = parts[2] if len(parts) > 2 else ""
+                    groups_info = {
+                        "domain admins":   ["Administrator"],
+                        "helpdesk":        ["j.smith"],
+                        "backup operators":["svc_backup"],
+                        "scada_operators": ["svc_scada"],
+                        "domain users":    ["j.smith", "m.jones", "svc_web", "svc_backup", "svc_scada"],
+                    }
+                    key = gname.lower().strip('"')
+                    members = groups_info.get(key, [])
+                    if members:
+                        console.print(f"Group name     {gname}")
+                        console.print(f"Members\n")
+                        for m in members:
+                            console.print(f"  {m}")
+                    else:
+                        console.print(f"[bright_black]Group '{gname}' not found or empty.[/bright_black]")
+                else:
+                    console.print("[bright_black]net: user /domain <user>  |  group /domain <group>[/bright_black]")
+
+            elif cmd == "reg" and is_win:
+                if "run" in raw.lower():
+                    if "WindowsUpdate" in "".join(self.persistence_done):
+                        console.print("[bold red]HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run[/bold red]")
+                        console.print("  WindowsUpdate    REG_SZ    C:\\Windows\\Temp\\update.exe")
+                    else:
+                        console.print("[bright_black]HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run[/bright_black]")
+                        console.print("[bright_black]  (No entries)[/bright_black]")
+                else:
+                    console.print("[bright_black]reg query HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run[/bright_black]")
+
+            elif cmd == "netstat":
+                if is_win:
+                    console.print(f"  Proto  Local Address          Foreign Address        State")
+                    console.print(f"  TCP    {target_ip}:445       10.0.2.15:51234       ESTABLISHED")
+                    console.print(f"  TCP    {target_ip}:3389      10.0.2.15:4444        ESTABLISHED")
+                    console.print(f"  [bold red]TCP    {target_ip}:49152    10.0.2.15:4444        ESTABLISHED[/bold red]  [bright_black]← Meterpreter![/bright_black]")
+                    console.print(f"[bright_black]  OPSEC: Meterpreter connection visible in netstat — Blue Team can see PID[/bright_black]\n")
+                else:
+                    console.print(f"  tcp  0  0  {target_ip}:8080   10.0.2.15:4444   ESTABLISHED")
+                    console.print(f"  [bold red]tcp  0  0  {target_ip}:45123  10.0.2.15:4444   ESTABLISHED[/bold red]  [bright_black]← shell[/bright_black]")
+
+            elif cmd == "arp":
+                console.print(f"  Interface: {target_ip}")
+                console.print(f"  Internet Address      Physical Address      Type")
+                if zone == "DMZ":
+                    console.print(f"  [yellow]192.168.10.10[/yellow]         aa:bb:cc:01:02:03     dynamic  [bright_black](db-server)[/bright_black]")
+                    console.print(f"  [yellow]192.168.10.20[/yellow]         aa:bb:cc:04:05:06     dynamic  [bright_black](dev-server)[/bright_black]")
+                    console.print(f"  [yellow]10.10.10.5[/yellow]            aa:bb:cc:07:08:09     dynamic  [bright_black](corp-dc — dual-homed route)[/bright_black]")
+                elif zone == "CORP":
+                    console.print(f"  [yellow]10.10.10.15[/yellow]           aa:bb:cc:0a:0b:0c     dynamic  [bright_black](corp-file)[/bright_black]")
+                    console.print(f"  [yellow]10.10.10.30[/yellow]           aa:bb:cc:0d:0e:0f     dynamic  [bright_black](corp-mail)[/bright_black]")
+                    console.print(f"  [yellow]172.16.5.10[/yellow]           aa:bb:cc:10:11:12     dynamic  [bright_black](scada-hmi — OT route)[/bright_black]")
+                elif zone == "OT":
+                    console.print(f"  [yellow]172.16.5.20[/yellow]           aa:bb:cc:13:14:15     dynamic  [bright_black](plc-controller)[/bright_black]")
 
             elif cmd in ("ps", "tasklist"):
                 procs = (
-                    ["svchost.exe  PID:512", "lsass.exe  PID:640",
-                     "wincc.exe  PID:1204", "cmd.exe  PID:3344"]
+                    ["svchost.exe    PID:512   SYSTEM",
+                     "lsass.exe      PID:640   SYSTEM",
+                     "wincc.exe      PID:1204  SYSTEM",
+                     "spoolsv.exe    PID:1508  SYSTEM",
+                     "explorer.exe   PID:820   Administrator",
+                     "cmd.exe        PID:3344  Administrator"]
                     if is_win else
-                    ["apache2  PID:812", "mysqld  PID:1024",
-                     "sshd  PID:2204", "sh  PID:4011"]
+                    ["apache2  PID:812   www-data",
+                     "mysqld   PID:1024  mysql",
+                     "sshd     PID:2204  root",
+                     "sh       PID:4011  www-data"]
                 )
                 for p in procs:
                     console.print(f"  {p}")
@@ -1097,60 +1556,103 @@ class CyberLab:
                 for i, h in enumerate(self.shell_history[-20:], 1):
                     console.print(f"  {i:3}  {h}")
 
-            # ── Modbus / S7 ICS commands (OT zone) ──────────────────
-            elif cmd == "modbus" and zone == "OT":
-                sub = parts[1] if len(parts) > 1 else ""
-                target_plc = parts[2] if len(parts) > 2 else "172.16.5.20"
-                self.log_event("ICS_MODBUS", f"modbus {sub} {target_plc}", "CRIT")
-                self.alert_level += 5
-                if sub == "read_coils":
-                    start = parts[3] if len(parts) > 3 else "0"
-                    count = parts[4] if len(parts) > 4 else "10"
-                    console.print(f"[*] Modbus Read Coils — {target_plc}:{502} addr={start} count={count}")
-                    time.sleep(0.5)
-                    coils = ["ON" if random.random() > 0.4 else "OFF" for _ in range(int(count))]
-                    for i, c in enumerate(coils):
-                        color = "green" if c == "ON" else "bright_black"
-                        console.print(f"  Coil[{int(start)+i:03d}]: [{color}]{c}[/{color}]")
-                    console.print(f"[bright_black]  ICS FINDING: Modbus TCP has no authentication — any host can read/write coils[/bright_black]\n")
-                elif sub == "write_coil":
-                    addr  = parts[3] if len(parts) > 3 else "0"
-                    value = parts[4] if len(parts) > 4 else "1"
-                    console.print(f"[bold red][!] Writing Coil[{addr}] = {value} on {target_plc}[/bold red]")
-                    time.sleep(0.6)
-                    console.print(f"[bold red][+] Coil[{addr}] forced to {'ON' if value=='1' else 'OFF'} — physical output changed![/bold red]")
-                    console.print(f"[bold red]    ⚠  This affects real physical process in production![/bold red]\n")
-                    self._mark_obj("Persistence — Hunter-ის გვერდის ავლა", "Modbus coil write — physical impact")
-                elif sub == "read_registers":
-                    console.print(f"[*] Modbus Read Holding Registers — {target_plc}")
-                    time.sleep(0.5)
-                    for i in range(5):
-                        console.print(f"  HR[{i:03d}]: {random.randint(0, 32767)}")
-                    console.print(f"[bright_black]  Process values readable without authentication.[/bright_black]\n")
+            elif cmd == "schtasks" and is_win:
+                if "/create" in raw.lower():
+                    task_name = "WinUpdate"
+                    for i, p in enumerate(parts):
+                        if p.lower() == "/tn" and i+1 < len(parts):
+                            task_name = parts[i+1]
+                    self.log_event("PERSISTENCE_SCHTASK", f"Scheduled task: {task_name} on {node['hostname']}", "CRIT")
+                    self.alert_level += 6
+                    console.print(f"[bold green]SUCCESS: The scheduled task \"{task_name}\" has been successfully created.[/bold green]")
+                    console.print(f"[bright_black]  Task: {task_name}  |  Trigger: ONLOGON  |  Run As: SYSTEM[/bright_black]")
+                    console.print(f"[yellow]  OPSEC: Event ID 4698 (Scheduled Task Created) — less visible than service[/yellow]")
+                    console.print(f"  {self._alert_bar()}  [bright_black](+6%)[/bright_black]\n")
+                    key = f"Scheduled Task ({task_name})"
+                    if key not in self.persistence_done:
+                        self.persistence_done.append(key)
+                    self._mark_obj("Persistence — Hunter-ის გვერდის ავლა", f"Scheduled task: {task_name}")
+                    self.check_hunter()
+                elif "/query" in raw.lower():
+                    if self.persistence_done:
+                        console.print(f"[bold cyan]TaskName              Status     Next Run Time[/bold cyan]")
+                        for p in self.persistence_done:
+                            if "Scheduled Task" in p:
+                                console.print(f"  {p:<30} Ready      On logon")
+                    else:
+                        console.print("[bright_black](No custom scheduled tasks)[/bright_black]")
                 else:
-                    console.print("[cyan]modbus commands: read_coils <ip> <start> <count> · write_coil <ip> <addr> <0|1> · read_registers <ip>[/cyan]")
-                self.check_hunter()
+                    console.print("[bright_black]schtasks /create /tn <name> /tr <cmd> /sc onlogon /ru SYSTEM[/bright_black]")
+                    console.print("[bright_black]schtasks /query[/bright_black]")
+
+            elif cmd == "wmic" and is_win:
+                if "process call create" in raw.lower():
+                    target_node_wmi = parts[2] if len(parts) > 2 else ""
+                    self.log_event("WMI_EXEC", f"WMI process create on {target_node_wmi}", "HIGH")
+                    self.alert_level += 8
+                    console.print(f"[bold green][+] WMI process created on {target_node_wmi}[/bold green]")
+                    console.print(f"[bright_black]  Executing via Win32_Process::Create (Event ID 4688)[/bright_black]")
+                    console.print(f"[yellow]  OPSEC: WMI exec (+8%) stealthier than PsExec (+15%)[/yellow]")
+                    console.print(f"[yellow]  → Stealthiest: WMI event subscription (+4%)[/yellow]\n")
+                    self.check_hunter()
+                elif "subscription" in raw.lower() or "eventfilter" in raw.lower():
+                    self.log_event("PERSISTENCE_WMI", f"WMI subscription on {node['hostname']}", "CRIT")
+                    self.alert_level += 4
+                    console.print("[bold green][+] WMI permanent event subscription created[/bold green]")
+                    console.print("    EventFilter:     __EventFilter (ProcessCreation)")
+                    console.print("    EventConsumer:   CommandLineEventConsumer → update.exe")
+                    console.print("    Binding:         __FilterToConsumerBinding\n")
+                    console.print(f"[yellow]  OPSEC: WMI subscription (+4%) = stealthiest persistence[/yellow]")
+                    console.print(f"[yellow]  Hunter ამ ვექტორს ნელ-ნელა ხედავს (behavioral detection only)[/yellow]\n")
+                    console.print(f"  {self._alert_bar()}  [bright_black](+4%)[/bright_black]\n")
+                    key = "WMI Subscription (stealthiest)"
+                    if key not in self.persistence_done:
+                        self.persistence_done.append(key)
+                    self._mark_obj("Persistence — Hunter-ის გვერდის ავლა", "WMI event subscription")
+                    self.check_hunter()
+                else:
+                    console.print("[bright_black]wmic /node:<ip> /user:<u> /password:<p> process call create \"cmd.exe\"[/bright_black]")
+                    console.print("[bright_black]wmic eventfilter ...  (WMI persistence)[/bright_black]")
+
+            elif cmd == "curl" and not is_win:
+                if "-X POST" in raw or "--data" in raw or "-F" in raw:
+                    self.log_event("EXFIL_CURL", f"curl POST to C2: {self.c2_server}", "CRIT")
+                    self.alert_level += 3
+                    target_url = next((p for p in parts if p.startswith("http")), f"https://{self.c2_server}/upload")
+                    file_arg   = ""
+                    for i, p in enumerate(parts):
+                        if p == "-F" and i+1 < len(parts):
+                            file_arg = parts[i+1]
+                    console.print(f"[bright_black]*   Trying {target_url}...[/bright_black]")
+                    time.sleep(0.5)
+                    console.print(f"[bright_black]> POST /upload HTTP/1.1[/bright_black]")
+                    size = random.randint(5000, 80000)
+                    console.print(f"[bold green]< HTTP/1.1 200 OK[/bold green]")
+                    console.print(f"[bold green][+] {size:,} bytes exfiltrated → {target_url}[/bold green]")
+                    console.print(f"[bright_black]  OPSEC: HTTPS encrypted — IDS ვერ ხედავს payload-ს  |  Alert +3%[/bright_black]\n")
+                    self._mark_obj("Exfiltration Alert 40%-ის გარეშე", f"curl HTTPS exfil to {self.c2_server}")
+                    self.check_hunter()
+                else:
+                    target_url = parts[1] if len(parts) > 1 else ""
+                    console.print(f"[bright_black]curl {target_url}[/bright_black]")
+                    console.print("[bright_black]HTTP/1.1 200 OK[/bright_black]\n")
+
+            elif cmd == "modbus" and zone == "OT":
+                self._shell_modbus(parts, raw)
 
             elif cmd == "s7client" and zone == "OT":
-                target_plc = parts[1] if len(parts) > 1 else "172.16.5.20"
-                action_arg = parts[2] if len(parts) > 2 else ""
-                self.log_event("ICS_S7COMM", f"s7client {target_plc} {action_arg}", "CRIT")
-                self.alert_level += 10
-                if "--stop-cpu" in raw or "stop" in action_arg:
-                    console.print(f"[bold red][!] S7comm CPU STOP command → {target_plc}[/bold red]")
-                    time.sleep(1.0)
-                    console.print(f"[bold red][+] S7-400 CPU halted — PLC in STOP mode![/bold red]")
-                    console.print(f"[bold red]    ⚠  Industrial process HALTED. Physical impact imminent![/bold red]\n")
-                    self._mark_obj("Persistence — Hunter-ის გვერდის ავლა", "S7comm CPU STOP command sent")
-                elif "--get-info" in raw or "info" in action_arg:
-                    console.print(f"[*] S7comm SZL read → {target_plc}")
-                    time.sleep(0.5)
-                    console.print("  Module: Siemens S7-400  Order: 6ES7 412-2XK07-0AB0")
-                    console.print("  Firmware: V5.6.4  Serial: S Q-C3V00123")
-                    console.print("  CPU State: RUN  Memory: 256KB")
-                    console.print(f"[bright_black]  ICS FINDING: S7comm allows unauthenticated CPU info disclosure[/bright_black]\n")
-                else:
-                    console.print("[cyan]s7client commands: <ip> --get-info · <ip> --stop-cpu · <ip> --start-cpu[/cyan]")
+                self._shell_s7client(parts, raw)
+
+            elif cmd == "iodine" and not is_win:
+                self.log_event("EXFIL_DNS_TUNNEL", f"iodine DNS tunnel established", "CRIT")
+                self.alert_level += 2
+                tunnel_domain = parts[-1] if len(parts) > 1 else "tunnel.geoforum.ge"
+                console.print(f"[*] Connecting to {tunnel_domain}...")
+                time.sleep(0.8)
+                console.print(f"[bold green][+] Connection established — DNS tunnel active[/bold green]")
+                console.print(f"[bright_black]    Interface: dns0  MTU: 1130  Server: {self.c2_server}[/bright_black]")
+                console.print(f"[bright_black]    OPSEC: DNS tunnel via port 53 — firewall bypass, very hard to detect[/bright_black]")
+                console.print(f"    {self._alert_bar()}  [bright_black](+2%)[/bright_black]\n")
                 self.check_hunter()
 
             else:
@@ -1158,38 +1660,77 @@ class CyberLab:
                 if zone == "OT" and cmd not in ("cd", "ls", "dir", "cat", "type", "find", "whoami"):
                     console.print(f"[bright_black]  OT commands: modbus · s7client · dir · type · cd[/bright_black]")
 
-        # ── after shell exits, set target_ip reference ──────────────
-        # (needed for log_event closure — already captured via node)
+    def _shell_modbus(self, parts, raw):
+        sub        = parts[1] if len(parts) > 1 else ""
+        target_plc = parts[2] if len(parts) > 2 else "172.16.5.20"
+        self.log_event("ICS_MODBUS", f"modbus {sub} {target_plc}", "CRIT")
+        self.alert_level += 5
+        if sub == "read_coils":
+            start = parts[3] if len(parts) > 3 else "0"
+            count = parts[4] if len(parts) > 4 else "10"
+            console.print(f"[*] Modbus Read Coils — {target_plc}:{502} addr={start} count={count}")
+            time.sleep(0.5)
+            coils = ["ON" if random.random() > 0.4 else "OFF" for _ in range(int(count))]
+            for i, c in enumerate(coils):
+                color = "green" if c == "ON" else "bright_black"
+                console.print(f"  Coil[{int(start)+i:03d}]: [{color}]{c}[/{color}]")
+            console.print(f"[bright_black]  ICS FINDING: Modbus TCP has no authentication — any host can read/write coils (CWE-306)[/bright_black]\n")
+        elif sub == "write_coil":
+            addr  = parts[3] if len(parts) > 3 else "0"
+            value = parts[4] if len(parts) > 4 else "1"
+            console.print(f"[bold red][!] Writing Coil[{addr}] = {value} on {target_plc}[/bold red]")
+            time.sleep(0.6)
+            console.print(f"[bold red][+] Coil[{addr}] forced to {'ON' if value=='1' else 'OFF'} — physical output changed! (SIMULATION)[/bold red]")
+            console.print(f"[bold red]    ⚠  სიმულაცია: რეალობაში ეს ფიზიკურ პროცესს შეცვლიდა![/bold red]\n")
+            self._mark_obj("SCADA HMI-ზე წვდომა", "Modbus coil write — OT physical access confirmed")
+        elif sub == "read_registers":
+            console.print(f"[*] Modbus Read Holding Registers — {target_plc}")
+            time.sleep(0.5)
+            labels = ["Temp_Sensor_1", "Pressure_Main", "Flow_Rate", "Valve_Pos", "RPM_Turbine"]
+            for i in range(5):
+                val = random.randint(0, 32767)
+                console.print(f"  HR[{i:03d}]: {val:>6}   [bright_black]({labels[i]})[/bright_black]")
+            console.print(f"[bright_black]  Process values readable without authentication.[/bright_black]\n")
+        else:
+            console.print("[cyan]modbus commands: read_coils <ip> <start> <count> · write_coil <ip> <addr> <0|1> · read_registers <ip>[/cyan]")
+        self.check_hunter()
 
-    def _mark_obj(self, obj_key: str, log_detail: str):
-        if obj_key not in self.objectives_done:
-            self.objectives_done.append(obj_key)
-            console.print(f"[bold green]  ✓ OBJECTIVE: {obj_key}[/bold green]")
-            self.log_event("OBJECTIVE_DONE", log_detail, "HIGH")
+    def _shell_s7client(self, parts, raw):
+        target_plc = parts[1] if len(parts) > 1 else "172.16.5.20"
+        action_arg = parts[2] if len(parts) > 2 else ""
+        self.log_event("ICS_S7COMM", f"s7client {target_plc} {action_arg}", "CRIT")
+        self.alert_level += 10
+        if "--stop-cpu" in raw or "stop" in action_arg:
+            console.print(f"[bold red][!] S7comm CPU STOP command → {target_plc}[/bold red]")
+            time.sleep(1.0)
+            console.print(f"[bold red][+] S7-400 CPU halted — PLC in STOP mode! (SIMULATION)[/bold red]")
+            console.print(f"[bold red]    ⚠  სიმულაცია: რეალობაში ეს ინდუსტრიულ პროცესს გაჩერებდა![/bold red]")
+            console.print(f"[bold red]    ⚠  OPSEC: S7comm CPU STOP = OT alarm + immediate Blue Team response![/bold red]\n")
+            self._mark_obj("SCADA HMI-ზე წვდომა", "S7comm CPU STOP — OT full control confirmed")
+        elif "--start-cpu" in raw or "start" in action_arg:
+            console.print(f"[*] S7comm CPU START command → {target_plc}")
+            time.sleep(0.8)
+            console.print(f"[bold green][+] S7-400 CPU transitioned STOP → RUN mode[/bold green]")
+            console.print(f"[yellow]  ⚠  Verify PLC logic integrity before restart in real environments![/yellow]\n")
+        elif "--get-info" in raw or "info" in action_arg:
+            console.print(f"[*] S7comm SZL read → {target_plc}")
+            time.sleep(0.5)
+            console.print("  Module: Siemens S7-400  Order: 6ES7 412-2XK07-0AB0")
+            console.print("  Firmware: V5.6.4  Serial: S Q-C3V00123")
+            console.print("  CPU State: RUN  Memory: 256KB  Protection: [bold red]NONE[/bold red]")
+            console.print(f"[bright_black]  ICS FINDING: S7comm allows unauthenticated CPU info disclosure[/bright_black]\n")
+        elif "--read-db" in raw:
+            db_num = parts[3] if len(parts) > 3 else "1"
+            console.print(f"[*] Reading Data Block DB{db_num} from {target_plc}")
+            time.sleep(0.6)
+            for i in range(4):
+                console.print(f"  DB{db_num}.DBD{i*4}: {random.randint(0, 65535)}")
+            console.print(f"[bright_black]  S7comm: unauthenticated DB read (CWE-306)[/bright_black]\n")
+        else:
+            console.print("[cyan]s7client <ip> --get-info · --stop-cpu · --start-cpu · --read-db <db#>[/cyan]")
+        self.check_hunter()
 
-    def _victory_summary(self):
-        elapsed = datetime.now().strftime("%H:%M:%S")
-        console.print(Panel(
-            f"[bold green]Session started : {self.start_time}\n"
-            f"Flag captured   : {elapsed}[/bold green]\n\n"
-            f"[white]Compromised hosts:[/white]\n"
-            + "\n".join(
-                f"  • {ip}  {self.network[ip]['hostname']}  ({self.network[ip]['zone']})"
-                for ip in self.compromised.values()
-            ) + "\n\n"
-            f"[yellow]Attack chain verified: DMZ → CORP → OT/SCADA[/yellow]\n\n"
-            f"[bright_black]Objectives: {len(self.objectives_done)}/{len(self.meta.get('objectives',[]))}[/bright_black]\n"
-            f"[bright_black]Max alert reached: {self.alert_level}%  "
-            f"(Hunter threshold: {self.meta.get('hunter_threshold',50)}%)[/bright_black]\n\n"
-            f"[cyan]Blue Team SOC შეამოწმე: [bold]server.py[/bold] terminal-ში[/cyan]",
-            title="[ 🏆 VICTORY REPORT ]", border_style="bold green",
-        ))
-
-    # ──────────────────────────────────────────────────────────────────
-    #  CMD: PROXYCHAINS
-    # ──────────────────────────────────────────────────────────────────
     def cmd_proxychains(self, parts):
-        """proxychains <tool> [args] — route tool through SOCKS proxy."""
         if not self.msf_options.get("_socks_active"):
             console.print("[red][-] SOCKS proxy not running.[/red]")
             console.print("[yellow]  → MSF: use auxiliary/server/socks_proxy → set SRVPORT 1080 → run[/yellow]\n")
@@ -1207,9 +1748,9 @@ class CyberLab:
                 console.print("[red][-] proxychains nmap requires a target.[/red]"); return
             target_arg = args[-1]
             flags      = " ".join(args[:-1]) if len(args) > 1 else "-sT"
-            # proxychains forces -sT (TCP connect), warn if -sS used
             if "-sS" in flags:
-                console.print("[yellow][!] proxychains does not support SYN scan (-sS). Switching to -sT.[/yellow]")
+                console.print("[yellow][!] proxychains does not support SYN scan (-sS). Switching to -sT (TCP Connect).[/yellow]")
+                console.print("[bright_black]    OPSEC: -sT through SOCKS is slower but required — proxy cannot forward raw packets.[/bright_black]")
                 flags = flags.replace("-sS", "-sT")
             console.print(f"[bright_black][proxychains] Proxifying nmap {flags} {target_arg}[/bright_black]")
             self.cmd_nmap(target_arg, flags)
@@ -1221,11 +1762,7 @@ class CyberLab:
             console.print(f"[bright_black][proxychains] Running: {tool} {' '.join(args)}[/bright_black]")
             console.print(f"[bright_black](simulation: {tool} proxied successfully)[/bright_black]\n")
 
-    # ──────────────────────────────────────────────────────────────────
-    #  CMD: HASHCAT
-    # ──────────────────────────────────────────────────────────────────
     def cmd_hashcat(self, parts):
-        """Simulate hashcat — mode-aware: 1000 NTLM, 13100 TGS-REP, 3200 bcrypt."""
         mode     = "1000"
         hashfile = "hashes.txt"
         wordlist = "rockyou.txt"
@@ -1241,11 +1778,11 @@ class CyberLab:
                 i += 1
 
         MODE_INFO = {
-            "1000":  ("NTLM",          "MD4(NT hash)         — from hashdump / secretsdump"),
-            "13100": ("Kerberos TGS-REP","$krb5tgs$23$*...  — from kerberoast"),
-            "3200":  ("bcrypt",         "$2y$10$...          — from web app config files"),
-            "18200": ("AS-REP Roast",   "$krb5asrep$23$...  — accounts without Kerberos preauth"),
-            "5600":  ("NetNTLMv2",      "NTLM relay / Responder captures"),
+            "1000":  ("NTLM",           "MD4(NT hash)         — from hashdump / DCSync / secretsdump"),
+            "13100": ("Kerberos TGS-REP","$krb5tgs$23$*...   — from kerberoast (SPN accounts)"),
+            "18200": ("Kerberos AS-REP", "$krb5asrep$23$...  — from asreproast (no preauth accounts)"),
+            "5600":  ("NetNTLMv2",       "NTLMv2 challenge    — from Responder / relay captures"),
+            "3200":  ("bcrypt",          "$2y$10$...          — from web app config files (very slow)"),
         }
         mode_name, mode_desc = MODE_INFO.get(mode, (f"Mode {mode}", ""))
 
@@ -1293,7 +1830,7 @@ class CyberLab:
             console.print("[bold green]Session complete![/bold green]\n")
             t2 = Table(title="Cracked TGS-REP (Kerberoast)", box=box.SIMPLE_HEAD, header_style="bold magenta")
             t2.add_column("Account",  style="cyan",     width=16)
-            t2.add_column("SPN",      style="yellow",   width=26)
+            t2.add_column("SPN",      style="yellow",   width=30)
             t2.add_column("Password", style="bold red", width=20)
             t2.add_row("svc_backup", "MSSQLSvc/corp-db:1433", "Backup@123")
             t2.add_row("svc_scada",  "HOST/scada-hmi",        "Sc4da@Admin!")
@@ -1301,6 +1838,38 @@ class CyberLab:
             console.print("\n[bright_black]  Recovered: 2/3  |  svc_web: NOT cracked (strong password)[/bright_black]")
             console.print("[bright_black]  → svc_backup cracked — use for DCSync PATH-2![/bright_black]\n")
             self._mark_obj("Exfiltration Alert 40%-ის გარეშე", "TGS-REP hashes cracked offline (-m 13100)")
+
+        elif mode == "18200":
+            with Progress(SpinnerColumn(), BarColumn(), TaskProgressColumn(),
+                          TextColumn("[cyan]Cracking AS-REP (Kerberoast no-preauth)..."), transient=True) as prog:
+                t = prog.add_task("", total=100)
+                while not prog.finished:
+                    prog.update(t, advance=random.randint(8, 18)); time.sleep(0.15)
+            console.print("[bold green]Session complete![/bold green]\n")
+            t2 = Table(title="Cracked AS-REP Hashes", box=box.SIMPLE_HEAD, header_style="bold magenta")
+            t2.add_column("Account",  style="cyan",     width=16)
+            t2.add_column("Password", style="bold red", width=20)
+            t2.add_column("Note",     style="bright_black")
+            t2.add_row("m.jones", "Welcome1", "Domain Users only — limited privs")
+            console.print(t2)
+            console.print("\n[bright_black]  Recovered: 1/1  |  Time: 00:00:03[/bright_black]")
+            console.print("[bright_black]  m.jones:Welcome1 — can be used as domain foothold for further enum[/bright_black]\n")
+
+        elif mode == "5600":
+            with Progress(SpinnerColumn(), BarColumn(), TaskProgressColumn(),
+                          TextColumn("[cyan]Cracking NetNTLMv2 (Responder capture)..."), transient=True) as prog:
+                t = prog.add_task("", total=100)
+                while not prog.finished:
+                    prog.update(t, advance=random.randint(10, 25)); time.sleep(0.14)
+            console.print("[bold green]Session complete![/bold green]\n")
+            t2 = Table(title="Cracked NetNTLMv2 (Responder)", box=box.SIMPLE_HEAD, header_style="bold magenta")
+            t2.add_column("Account",    style="cyan",     width=20)
+            t2.add_column("Password",   style="bold red", width=20)
+            t2.add_column("Source",     style="bright_black")
+            t2.add_row("j.smith::AMNESIA", "P@ssw0rd2026!", "NTLMv2 relay capture")
+            console.print(t2)
+            console.print("\n[bright_black]  → NetNTLMv2 ≠ NTLM — cannot be used for Pass-the-Hash![/bright_black]")
+            console.print("[bright_black]  → Use cracked plaintext password instead for auth[/bright_black]\n")
 
         elif mode == "3200":
             with Progress(SpinnerColumn(), BarColumn(), TaskProgressColumn(),
@@ -1312,13 +1881,11 @@ class CyberLab:
             console.print("[bright_black]  $2y$10$Xvf3mK9... : [/bright_black][bold red]admin123[/bold red]  (ADMIN_HASH from config.php.bak)")
             console.print("[bright_black]  Recovered: 1/1  |  Time: 00:02:44[/bright_black]\n")
         else:
-            console.print(f"[yellow][!] Mode {mode} not simulated. Supported: -m 1000 (NTLM) / -m 13100 (TGS-REP) / -m 3200 (bcrypt)[/yellow]\n")
+            console.print(f"[yellow][!] Mode {mode} not simulated.[/yellow]")
+            console.print("[bright_black]  Supported: -m 1000 (NTLM) · -m 13100 (TGS-REP) · -m 18200 (AS-REP) · -m 5600 (NetNTLMv2) · -m 3200 (bcrypt)[/bright_black]\n")
 
-    # ──────────────────────────────────────────────────────────────────
-    #  HINT
-    # ──────────────────────────────────────────────────────────────────
     def cmd_hint(self):
-        idx  = self.hint_index % len(HINTS)
+        idx = self.hint_index % len(HINTS)
         console.print(Panel(
             f"[bold yellow]{HINTS[idx]}[/bold yellow]\n\n"
             f"[bright_black]Hint {idx+1}/{len(HINTS)} — 'hint' ხელახლა შემდეგ ნაბიჯს გაჩვენებს.[/bright_black]",
@@ -1326,48 +1893,157 @@ class CyberLab:
         ))
         self.hint_index += 1
 
-    # ──────────────────────────────────────────────────────────────────
-    #  HELP
-    # ──────────────────────────────────────────────────────────────────
+    def _meterpreter_help(self):
+        console.print(Panel(
+            "[bold green]METERPRETER:[/bold green]\n"
+            "  sysinfo · getuid · getsystem · ifconfig · shell · background · exit\n"
+            "  hashdump              — SAM dump (local only; DC needs DCSync)\n"
+            "  upload <file>         — ფაილის ატვირთვა სამიზნეზე  (+3% alert)\n"
+            "  download <file>       — ფაილის გადმოწერა  (+5% alert)\n"
+            "  exfil <file> [--method https|dns]  — C2 exfiltration (+2-3% alert)\n"
+            "  migrate <pid>         — process migration: 820=explorer (safe), 640=lsass (EDR blocks!)\n"
+            "  mimikatz sekurlsa::logonpasswords   — LSASS dump  (+20% alert)\n"
+            "  mimikatz lsadump::dcsync /domain:AMNESIA.LOCAL /user:<u>  (+25% alert)\n"
+            "  kerberoast            — TGS tickets → hashcat -m 13100  (+8%)\n"
+            "  asreproast            — AS-REP tickets → hashcat -m 18200  (+5%)\n"
+            "  autoroute -s <subnet> — Pivot to new network segment  (+0%!)\n"
+            "  run autoroute -s <subnet>  — same as above\n"
+            "  run post/windows/manage/persistence_exe  — service persistence (+12%)\n"
+            "  persistence [-X] [-r <lhost>]  — registry Run Key  (+8%)\n"
+            "  sessions              — list/switch sessions\n",
+            title="[ METERPRETER HELP ]", border_style="green",
+        ))
+
     def cmd_help(self):
         console.print(Panel(
             "[bold cyan]KALI SHELL:[/bold cyan]\n"
-            "  shodan <domain>              — OSINT recon\n"
-            "  nmap <ip> [-sS|-sV]          — Port scan (stealth = less noise)\n"
-            "  proxychains nmap -sT <ip>    — Scan via SOCKS proxy (after pivot)\n"
-            "  hashcat -m 1000  <file>      — Crack NTLM hashes (from hashdump/DCSync)\n"
-            "  hashcat -m 13100 <file>      — Crack Kerberoast TGS-REP hashes\n"
-            "  hashcat -m 3200  <file>      — Crack bcrypt (web app configs)\n"
-            "  msfconsole                   — Metasploit Framework\n"
-            "  netmap / ad / eventlog / hint / help / clear / exit\n\n"
+            "  shodan <domain>                   — OSINT recon (passive, +0% alert)\n"
+            "  nmap <ip> [flags]                 — Port scan (flags affect alert!)\n"
+            "    -sS        SYN/stealth           +2–5%    (recommended)\n"
+            "    -sT        TCP connect           +6–10%   (needed for proxychains)\n"
+            "    -sU        UDP scan              +8–14%\n"
+            "    -sV        Version detection     +4–8%    (no version without this)\n"
+            "    -A         Aggressive (-sV-O-script) +15–25% (noisy!)\n"
+            "    -O         OS detection          +5–8%\n"
+            "    -p-        All 65535 ports       +8–15%\n"
+            "    -T1/-T2    Slow/sneaky timing    -3/-2%   (IDS bypass)\n"
+            "    -T4/-T5    Aggressive timing     +5/+10%  (loud!)\n"
+            "    -n         No DNS lookup         -2%      (OPSEC+)\n"
+            "    -Pn        Skip ping             +0%      (OPSEC+)\n"
+            "    --script=<name>  NSE scripts     +10–20%  (vuln checks)\n\n"
+            "  proxychains nmap -sT <ip>         — Scan via SOCKS (requires SOCKS proxy)\n"
+            "  hashcat -m <mode> <hashfile>      — Crack hashes\n"
+            "    -m 1000   NTLM          (hashdump / DCSync)\n"
+            "    -m 13100  TGS-REP       (kerberoast)\n"
+            "    -m 18200  AS-REP        (asreproast)\n"
+            "    -m 5600   NetNTLMv2     (Responder capture)\n"
+            "    -m 3200   bcrypt        (web configs — slow!)\n"
+            "  msfconsole · netmap · ad · eventlog · hint · help · clear · exit\n\n"
             "[bold magenta]MSFCONSOLE:[/bold magenta]\n"
-            "  use <module>  ·  set RHOSTS/USERNAME/PASSWORD/SRVPORT <val>\n"
-            "  db_nmap [-p <ports>] <ip>    — Scan + save to MSF DB\n"
-            "  run / exploit  ·  sessions [-i <id>]  ·  exit\n\n"
-            "[bold green]METERPRETER:[/bold green]\n"
-            "  sysinfo · getuid · getsystem · ifconfig · hashdump\n"
-            "  mimikatz sekurlsa::logonpasswords\n"
-            "  mimikatz lsadump::dcsync /domain:AMNESIA.LOCAL /user:<u>  [+25% alert]\n"
-            "  kerberoast                   — TGS tickets → hashcat -m 13100\n"
-            "  autoroute -s <subnet>        — Pivot to new segment\n"
-            "  shell                        — OS shell  (modbus/s7client in OT)\n"
-            "  background / exit\n\n"
-            "[bold red]OPSEC NOTES:[/bold red]\n"
-            "  -sS flag = lower alert (+2-5%)  vs plain nmap (+6-12%)\n"
-            "  proxychains nmap requires -sT (TCP connect, not SYN)\n"
-            "  DCSync += 25% alert (Event 4662) — do it last!\n"
-            "  Honeypot on 192.168.10.99 — ნუ შეეხები!\n"
-            "  Hunter threshold: 50% — ყოველი ნაბიჯი ითვლება.",
-            "[bold red]OPSEC NOTES:[/bold red]\n"
-            "  -sS flag on nmap = lower alert (+2-5%)  vs plain nmap (+6-12%)\n"
-            "  Honeypot on 192.168.10.99 — ნუ შეეხები!\n"
-            "  Hunter threshold: 50% — ყოველი ნაბიჯი ითვლება.",
+            "  use <module>  ·  set RHOSTS/USERNAME/PASSWORD/SMBUser/SMBPass/SRVPORT <val>\n"
+            "  db_nmap [-p <ports>] <ip>         — Scan + save to MSF DB\n"
+            "  run / exploit  ·  sessions [-i <id>]  ·  search <term>  ·  options  ·  exit\n\n"
+            "[bold green]SHELL (inside meterpreter > shell):[/bold green]\n"
+            "  cat/type · ls/dir · find · whoami · id · uname\n"
+            "  systeminfo · net user/group /domain · reg query\n"
+            "  netstat · arp · ps/tasklist · history\n"
+            "  schtasks /create ...              — Scheduled task persistence (+6%)\n"
+            "  wmic /node:<ip> process call ...  — WMI lateral movement (+8%)\n"
+            "  wmic eventfilter ...              — WMI subscription persistence (+4%)\n"
+            "  iodine -f -P <pass> <domain>      — DNS tunnel (+2%, OPSEC best)\n"
+            "  curl -X POST -F ...               — HTTPS exfil (+3%)\n"
+            "  modbus/s7client                   — OT zone commands\n\n"
+            "[bold red]OPSEC ALERT BUDGET (50% threshold):[/bold red]\n"
+            "  nmap -sS -T2 -n        +2–3%    ← stealthiest scan\n"
+            "  autoroute / SOCKS      +0%      ← pivot is free!\n"
+            "  kerberoast             +8%      ← prefer over DCSync\n"
+            "  DCSync                 +25%     ← generates Event 4662 — do last!\n"
+            "  mimikatz LSASS         +20%     ← visible to EDR\n"
+            "  WMI persistence        +4%      ← stealthiest persistence\n"
+            "  Honeypot 192.168.10.99 +50%     ← instant game over!",
             title="[ HELP ]", border_style="cyan",
         ))
 
-    # ──────────────────────────────────────────────────────────────────
-    #  MAIN LOOP
-    # ──────────────────────────────────────────────────────────────────
+    def _msf_db_nmap(self, parts):
+        db_ip     = parts[-1]
+        db_flags  = " ".join(parts[1:-1]) if len(parts) > 2 else "-sV"
+        internal_ip = self.internal_map.get(db_ip, db_ip)
+        if not self.is_routable(internal_ip):
+            console.print(f"[red][-] No route to {db_ip}. autoroute pivot-ი გჭირდება.[/red]")
+        elif internal_ip not in self.network:
+            console.print(f"[red][-] Host {db_ip} unreachable.[/red]")
+        else:
+            node  = self.network[internal_ip]
+            noise = random.randint(3, 7)
+            self.alert_level += noise
+            self.log_event("PORT_SCAN", f"db_nmap {db_ip} {db_flags}", "WARN")
+            with Progress(SpinnerColumn(), TextColumn(f"[cyan]db_nmap {db_ip}..."),
+                          transient=True) as p:
+                p.add_task("", total=None); time.sleep(1.5)
+            self.scanned_hosts.add(internal_ip)
+            console.print(f"\n[bold green][*] db_nmap: {node['hostname']} ({db_ip})[/bold green]")
+            console.print(f"[bright_black]OS: {node['os']} | Zone: {node['zone']}[/bright_black]")
+            if node.get("has_edr"):
+                console.print(f"[yellow][!] EDR: {node.get('edr_product','EDR')} detected[/yellow]")
+            t = Table(box=box.SIMPLE, header_style="bold white")
+            t.add_column("PORT",    style="cyan",   width=10)
+            t.add_column("STATE",   style="green",  width=8)
+            t.add_column("SERVICE", style="yellow", width=14)
+            t.add_column("VERSION", width=30)
+            t.add_column("VULN",    width=22)
+            port_filter = None
+            for i, part in enumerate(parts):
+                if part == "-p" and i + 1 < len(parts):
+                    port_filter = parts[i + 1].split(",")
+            for port, info in node["ports"].items():
+                if port_filter and port not in port_filter:
+                    continue
+                vuln_str = (f"[bold red]⚑ {info['vuln']}[/bold red]"
+                            if info.get("vuln") else "[bright_black]—[/bright_black]")
+                t.add_row(f"{port}/tcp", "open", info["service"], info["version"], vuln_str)
+            console.print(t)
+            console.print(f"[bright_black][*] Scan saved to MSF database.  Alert +{noise}%[/bright_black]\n")
+            self.check_hunter()
+
+    def _victory_summary(self):
+        end_time    = datetime.now()
+        elapsed     = end_time - self.start_time
+        mins, secs  = divmod(int(elapsed.total_seconds()), 60)
+        elapsed_str = f"{mins}m {secs}s"
+
+        chain_hosts = []
+        for ip in self.compromised.values():
+            n = self.network[ip]
+            chain_hosts.append(f"  • {ip:<16} {n['hostname']:<14} ({n['zone']})")
+
+        loot_str = (", ".join(self.loot_files[:6]) + (f" +{len(self.loot_files)-6} more" if len(self.loot_files) > 6 else "")) if self.loot_files else "none"
+
+        persist_str = "\n".join(f"  • {p}" for p in self.persistence_done) if self.persistence_done else "  (none installed)"
+
+        thresh   = self.meta.get("hunter_threshold", 50)
+        margin   = thresh - self.alert_level
+        opsec_color = "green" if margin > 15 else ("yellow" if margin > 5 else "bold red")
+
+        console.print(Panel(
+            f"[bold cyan]Operator  :[/bold cyan] anonimus\n"
+            f"[bold cyan]Target    :[/bold cyan] geoforum.ge — HARD MODE (DMZ → CORP → OT)\n"
+            f"[bold cyan]Duration  :[/bold cyan] {elapsed_str}  |  {self.start_time.strftime('%Y-%m-%d %H:%M:%S')} → {end_time.strftime('%H:%M:%S')}\n\n"
+            f"[bold white]ATTACK CHAIN ─────────────────────────────────────────[/bold white]\n"
+            + "\n".join(chain_hosts) +
+            f"\n  [yellow]→ Chain: DMZ (RCE) → CORP (AD/EternalBlue) → OT (S7comm)[/yellow]\n\n"
+            f"[bold white]LOOT ─────────────────────────────────────────────────[/bold white]\n"
+            f"  {loot_str}\n\n"
+            f"[bold white]PERSISTENCE ──────────────────────────────────────────[/bold white]\n"
+            f"{persist_str}\n\n"
+            f"[bold white]OPSEC SCORE ──────────────────────────────────────────[/bold white]\n"
+            f"  Peak Alert    : [{opsec_color}]{self.alert_level}%[/{opsec_color}]  (threshold: {thresh}%)\n"
+            f"  Margin left   : [{opsec_color}]{margin}%[/{opsec_color}]\n"
+            f"  Objectives    : {len(self.objectives_done)}/{len(self.meta.get('objectives',[]))}\n"
+            f"  Hunter evaded : [bold green]✓[/bold green]\n\n"
+            f"[cyan]Blue Team SOC timeline: check [bold]server.py[/bold] terminal[/cyan]",
+            title="[ 🏆 MISSION REPORT ]", border_style="bold green",
+        ))
+
     def run(self):
         self.load_scenario()
         self.banner()
@@ -1377,15 +2053,15 @@ class CyberLab:
                 self._tick_alert_decay()
 
                 if self.msf_mode:
-                    prompt = (f"[bold red]msf6[/bold red] "
+                    prompt = (f"[{MSF_COLOR}]msf6[/{MSF_COLOR}] "
                               f"[bold white]{self.msf_module or ''}[/bold white] > ")
                 elif self.active_session:
                     t_ip   = self.compromised[self.active_session]
                     t_host = self.network[t_ip]["hostname"]
-                    prompt = (f"[bold underline red]meterpreter[/bold underline red] "
+                    prompt = (f"[{METERP_COLOR}]meterpreter[/{METERP_COLOR}] "
                               f"[bright_black]({t_host})[/bright_black] > ")
                 else:
-                    prompt = "[bold green]┌──(anonimus㉿kali)-[~/workspace][/bold green]\n└─$ "
+                    prompt = f"[{PROMPT_COLOR}]┌──(anonimus㉿kali)-[~/workspace][/{PROMPT_COLOR}]\n└─$ "
 
                 user_input = console.input(prompt).strip()
                 if not user_input:
@@ -1394,7 +2070,6 @@ class CyberLab:
                 parts  = user_input.split()
                 action = parts[0].lower()
 
-                # ── global ──────────────────────────────────────────
                 if action == "clear":
                     self.banner(); continue
                 if action == "exit" and not self.msf_mode and not self.active_session:
@@ -1403,19 +2078,16 @@ class CyberLab:
                 if action == "help":
                     self.cmd_help(); continue
 
-                # ── msfconsole activate ─────────────────────────────
                 if action == "msfconsole" and not self.msf_mode and not self.active_session:
                     self.msf_mode = True
-                    console.print("\n[bold red]       =[ metasploit v6.3.44-dev ][/bold red]")
+                    console.print(f"\n[{MSF_COLOR}]       =[ metasploit v6.3.44-dev ][/{MSF_COLOR}]")
                     console.print("[bright_black]+ -- --=[ 2347 exploits - 1230 auxiliary - 427 post ][/bright_black]")
                     console.print("[bright_black]+ -- --=[ 607 payloads - 45 encoders                ][/bright_black]\n")
                     continue
 
-                # ── meterpreter ─────────────────────────────────────
                 if self.active_session:
                     self.handle_meterpreter(action, parts); continue
 
-                # ── msf commands ────────────────────────────────────
                 if self.msf_mode:
                     if action == "use" and len(parts) > 1:
                         self.msf_module = " ".join(parts[1:])
@@ -1429,7 +2101,6 @@ class CyberLab:
                     elif action == "search" and len(parts) > 1:
                         self.search_msf(parts[1])
                     elif action in ("run", "exploit"):
-                        # socks_proxy is a server, not an exploit
                         if self.msf_module == "auxiliary/server/socks_proxy":
                             port = self.msf_options.get("SRVPORT", "1080")
                             ver  = self.msf_options.get("VERSION", "5")
@@ -1443,51 +2114,17 @@ class CyberLab:
                         else:
                             self.run_msf_exploit()
                     elif action == "db_nmap":
-                        # db_nmap [flags] <ip>  — scans and saves to MSF db
-                        db_ip = parts[-1]
-                        db_flags = " ".join(parts[1:-1]) if len(parts) > 2 else "-sV"
-                        internal_ip = self.internal_map.get(db_ip, db_ip)
-                        if not self.is_routable(internal_ip):
-                            console.print(f"[red][-] No route to {db_ip}. autoroute pivot-ი გჭირდება.[/red]")
-                        elif internal_ip not in self.network:
-                            console.print(f"[red][-] Host {db_ip} unreachable.[/red]")
-                        else:
-                            node = self.network[internal_ip]
-                            noise = random.randint(3, 7)
-                            self.alert_level += noise
-                            self.log_event("PORT_SCAN", f"db_nmap {db_ip} {db_flags}", "WARN")
-                            with Progress(SpinnerColumn(), TextColumn(f"[cyan]db_nmap {db_ip}..."),
-                                          transient=True) as p:
-                                p.add_task("", total=None); time.sleep(1.5)
-                            self.scanned_hosts.add(internal_ip)
-                            console.print(f"\n[bold green][*] db_nmap: {node['hostname']} ({db_ip})[/bold green]")
-                            console.print(f"[bright_black]OS: {node['os']} | Zone: {node['zone']}[/bright_black]")
-                            t = Table(box=box.SIMPLE, header_style="bold white")
-                            t.add_column("PORT",    style="cyan",   width=10)
-                            t.add_column("STATE",   style="green",  width=8)
-                            t.add_column("SERVICE", style="yellow", width=14)
-                            t.add_column("VERSION", width=30)
-                            t.add_column("VULN",    width=22)
-                            # filter by -p flag if present
-                            port_filter = None
-                            for i, part in enumerate(parts):
-                                if part == "-p" and i + 1 < len(parts):
-                                    port_filter = parts[i + 1].split(",")
-                            for port, info in node["ports"].items():
-                                if port_filter and port not in port_filter:
-                                    continue
-                                vuln_str = (f"[bold red]⚑ {info['vuln']}[/bold red]"
-                                            if info.get("vuln") else "[bright_black]—[/bright_black]")
-                                t.add_row(f"{port}/tcp", "open", info["service"], info["version"], vuln_str)
-                            console.print(t)
-                            console.print(f"[bright_black][*] Scan saved to MSF database.  Alert +{noise}%[/bright_black]\n")
-                            self.check_hunter()
+                        self._msf_db_nmap(parts)
                     elif action == "exit":
                         self.msf_mode = False; self.msf_module = None
                         console.print("[*] Exiting msfconsole.")
                     elif action == "sessions":
                         if len(parts) > 2 and parts[1] == "-i":
-                            sid = int(parts[2])
+                            try:
+                                sid = int(parts[2])
+                            except ValueError:
+                                console.print(f"[red][-] Session ID რიცხვი უნდა იყოს.[/red]")
+                                continue
                             if sid in self.compromised:
                                 self.active_session = sid
                                 self.msf_mode       = False
@@ -1497,18 +2134,21 @@ class CyberLab:
                                 console.print(f"[red][-] Session {sid} not found.[/red]")
                         else:
                             if self.compromised:
+                                t = Table(box=box.SIMPLE, header_style="bold magenta")
+                                t.add_column("ID"); t.add_column("IP")
+                                t.add_column("Hostname"); t.add_column("OS"); t.add_column("Zone")
                                 for sid, ip in self.compromised.items():
                                     n = self.network[ip]
-                                    console.print(f"  [{sid}]  {ip}  {n['hostname']}  {n['os']}")
+                                    t.add_row(str(sid), ip, n["hostname"], n["os"], n["zone"])
+                                console.print(t)
                             else:
                                 console.print("[bright_black]No sessions.[/bright_black]")
                     elif action == "help":
-                        console.print("[cyan]msf> use · set · options · search · run · sessions · exit[/cyan]")
+                        console.print("[cyan]msf> use · set · options · search · run · db_nmap · sessions · exit[/cyan]")
                     else:
                         console.print(f"[red]msf> Unknown: {action}[/red]")
                     continue
 
-                # ── kali bash ────────────────────────────────────────
                 if action == "shodan" and len(parts) > 1:
                     self.cmd_shodan(parts[1])
                 elif action == "hashcat":
@@ -1516,8 +2156,23 @@ class CyberLab:
                 elif action == "proxychains":
                     self.cmd_proxychains(parts)
                 elif action == "nmap" and len(parts) > 1:
-                    flags = " ".join(parts[2:]) if len(parts) > 2 else ""
-                    self.cmd_nmap(parts[1], flags)
+                    ip_arg     = None
+                    flags_list = []
+                    skip_next  = False
+                    for i, part in enumerate(parts[1:], 1):
+                        if skip_next:
+                            flags_list.append(part); skip_next = False; continue
+                        if part.startswith("-"):
+                            flags_list.append(part)
+                            if part in ("-p", "-e", "--script", "--source-port"):
+                                skip_next = True
+                        else:
+                            ip_arg = part
+                    if ip_arg is None:
+                        console.print("[red][-] nmap: target IP გჭირდება.[/red]")
+                        console.print("[bright_black]  გამოყენება: nmap <ip> [-sS|-sV|-A|...][/bright_black]\n")
+                    else:
+                        self.cmd_nmap(ip_arg, " ".join(flags_list))
                 elif action == "netmap":
                     self.cmd_netmap()
                 elif action == "ad":
@@ -1535,7 +2190,6 @@ class CyberLab:
                 import traceback
                 console.print(f"[red][!] Error: {e}[/red]")
                 console.print(f"[bright_black]{traceback.format_exc()}[/bright_black]")
-
 
 if __name__ == "__main__":
     CyberLab().run()
